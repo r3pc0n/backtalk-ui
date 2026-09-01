@@ -137,6 +137,16 @@ def _norm_speech(text):
     return " ".join("".join(out).split())
 
 
+# Quit must only fire on an EXACT phrase, never a substring match — a
+# bare "hang up" is one of the configured phrases, so substring
+# matching quits on ANY sentence that happens to contain those two
+# words ("let's test the hang up button"), not just someone actually
+# trying to hang up. Confirmed live (2026-09-01): a real conversation
+# ended mid-sentence this way while discussing the hang-up feature by
+# name. Precomputed once since QUIT_PHRASES never changes at runtime.
+_QUIT_NORM = {_norm_speech(q) for q in QUIT_PHRASES}
+
+
 def _deny_pending(reason=_INTERRUPT_ANSWER):
     """Resolve a pending spoken ask as a deny. Called whenever the turn
     that posed it is being interrupted, so the ask can never outlive its
@@ -1082,8 +1092,7 @@ async def amain():
         if _PERM["fut"] is not None and not _PERM["fut"].done():
             started_after = (spoke_from is None
                              or spoke_from >= _PERM["asked_at"])
-            if _norm_speech(text) in {_norm_speech(q)
-                                      for q in QUIT_PHRASES}:
+            if _norm_speech(text) in _QUIT_NORM:
                 _PERM["fut"].set_result("no")
                 # falls through to the quit body below
             elif started_after:
@@ -1101,11 +1110,10 @@ async def amain():
                     "confirm", "confirmed", "yes confirm",
                     "yes confirmed"):
                 verb = pend + ":confirmed"
-            elif not expired and not any(q in text.lower()
-                                         for q in QUIT_PHRASES):
+            elif not expired and _norm_speech(text) not in _QUIT_NORM:
                 mouth.say("Staying as we are.")
                 return True
-        if any(q in text.lower() for q in QUIT_PHRASES):
+        if _norm_speech(text) in _QUIT_NORM:
             if speak_task and not speak_task.done():
                 speak_task.cancel()
             mouth.shut_up()
