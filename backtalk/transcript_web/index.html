@@ -286,6 +286,57 @@
   #send:disabled { opacity: 0.5; cursor: default; }
   #send:hover:not(:disabled) { filter: brightness(1.1); }
 </style>
+<script>
+/* Omarchy theme bridge — fetches this page's generated CSS
+   (~/workstation/backtalk-transcript-theme/) directly from the local
+   bridge server, instead of relying on the browser extension's
+   chrome.scripting injection. Extensions don't reach every renderer
+   (Television's Electron webview, in particular) — a page-level fetch
+   does, since it's just an ordinary same-machine HTTP request. Same
+   snippet as ai-visualizer/faces/radial/index.html; see that file's
+   comment for the full token-exposure rationale (confirmed acceptable
+   by Des, 2026-09-01, for this same-user, localhost-only, read-only
+   setup). Colors only — the layout, right-align toggle, settings menu,
+   and everything else built today is untouched; only the :root custom
+   property VALUES change underneath it. */
+(function () {
+  "use strict";
+  var BRIDGE_ENDPOINT = "http://127.0.0.1:9847/v1/style";
+  var BRIDGE_TOKEN = "a3a5798636584b2e6b5bc5d5b2d8853475080cbc5e8b4b8e53559f1f948de335";
+  var POLL_MS = 2000;
+  var styleEl = null;
+  var lastRevision = null;
+
+  function applyTheme() {
+    var url = BRIDGE_ENDPOINT
+      + "?hostname=" + encodeURIComponent(location.host.toLowerCase())
+      + "&pathname=" + encodeURIComponent(location.pathname);
+    fetch(url, {
+      cache: "no-store",
+      headers: { "X-Omarchy-Bridge-Token": BRIDGE_TOKEN }
+    }).then(function (r) {
+      if (!r.ok) throw new Error("bridge HTTP " + r.status);
+      return r.json();
+    }).then(function (data) {
+      if (data.revision === lastRevision) return;
+      lastRevision = data.revision;
+      if (!styleEl) {
+        styleEl = document.createElement("style");
+        styleEl.id = "omarchy-bridge-theme";
+        document.head.appendChild(styleEl);
+      }
+      styleEl.textContent = data.css;
+    }).catch(function () {
+      // No bridge reachable (viewed off this machine, bridge not
+      // running, etc.) — leave whatever's already applied, never
+      // break the page over this.
+    });
+  }
+
+  applyTheme();
+  setInterval(applyTheme, POLL_MS);
+})();
+</script>
 </head>
 <body>
   <header>
