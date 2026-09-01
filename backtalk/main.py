@@ -65,7 +65,7 @@ import sys
 import threading
 import time
 
-from backtalk import signals
+from backtalk import signals, transcript_server
 from backtalk.brain import WarmBrain
 from backtalk.config import CFG
 from backtalk.ears import (Ears, explain_audio_failure, record_held,
@@ -743,11 +743,13 @@ async def speak_reply(brain: WarmBrain, mouth: Mouth, text: str):
         if first:
             log(f"[{NAME}] ({time.time()-t0:.1f}s to first) {s}"
                 + (f"  <directions: {pending}>" if pending else ""))
+            transcript_server.add_event("samantha", s)
             mouth.say_chunk(s, pending)
             pending = []
             first = False
         else:
             log(f"[{NAME}] {s}" + (f"  <directions: {pending}>" if pending else ""))
+            transcript_server.add_event("samantha", s)
             batch.append(s)
             if len(batch) >= 2:
                 mouth.say_chunk(" ".join(batch), pending)
@@ -864,6 +866,15 @@ async def amain():
     typed_q: "queue.Queue[str]" = queue.Queue()
     threading.Thread(target=_typed_reader, args=(typed_q,), daemon=True).start()
     typed_fut: asyncio.Future | None = None
+
+    tui_cfg = CFG.get("transcript_ui") or {}
+    if tui_cfg.get("enabled", True):
+        # Typed input from the page is routed through the SAME typed_q
+        # the terminal reader feeds — see transcript_server.py's module
+        # docstring for why that makes it first-class rather than a
+        # parallel input path.
+        transcript_server.start(typed_q, int(tui_cfg.get("port", 8793)),
+                                open_browser=bool(tui_cfg.get("open_browser", False)))
 
     async def run_console(verb):
         """One voice-console verb. The current reply was already
@@ -1036,6 +1047,7 @@ async def amain():
         told apart from speech that began before the ask even existed."""
         nonlocal speak_task
         log(f"[you]    {text}")
+        transcript_server.add_event("you", text)
         # A pending spoken permission ask owns the next utterance IF
         # that utterance started after the ask was posed. Speech that
         # began earlier is the user interrupting the turn, not

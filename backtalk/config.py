@@ -293,6 +293,23 @@ DEFAULTS = {
     # breathes while idle, spins while thinking, pulses with the voice.
     # (github.com/jaredrhod/barehands)
     "barehands_state_dir": "",
+    # The transcript UI: a persistent web page (chat bubbles, plain text
+    # input) replacing the raw terminal window as a place to read and
+    # type into the conversation. Stdlib HTTP only, same as vault-graph
+    # and ai-visualizer — no websocket dependency, the page polls a
+    # cursor endpoint instead (see transcript_server.py). Typed input
+    # from the page is a first-class turn, identical to typing in the
+    # terminal (it goes into the same queue).
+    "transcript_ui": {
+        "enabled": True,
+        # Next free port after ai-visualizer (8790) and vault-graph
+        # (8792); 8791 is backtalk's own single-instance mutex.
+        "port": 8793,
+        # Open a browser tab automatically at launch. Off by default:
+        # this is meant to be a tab you open once and leave, like the
+        # other two, not a window that pops up every session.
+        "open_browser": False,
+    },
     # Sound played while the agent thinks, so a long pause never reads as
     # a dead line. The bundled one ships in assets/; a relative path
     # resolves against this repo. Set "" to think in silence.
