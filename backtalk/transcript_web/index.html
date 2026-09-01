@@ -68,6 +68,43 @@
     padding: 3px 10px;
     white-space: nowrap;
   }
+  .hangup-btn {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 11.5px;
+    padding: 3px 12px;
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+  }
+  .hangup-btn:hover {
+    color: var(--bad);
+    border-color: var(--bad);
+    background: rgba(230, 103, 103, 0.08);
+  }
+
+  #idleView {
+    margin: auto;
+    display: flex; flex-direction: column; align-items: center;
+    gap: 14px;
+  }
+  .idle-msg { color: var(--text-muted); font-size: 14px; }
+  .start-btn {
+    background: var(--samantha-accent);
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 28px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .start-btn:disabled { opacity: 0.6; cursor: default; }
+  .start-btn:hover:not(:disabled) { filter: brightness(1.1); }
+
   .settings-wrap { position: relative; }
   .icon-btn {
     background: none; border: none; cursor: pointer;
@@ -255,6 +292,7 @@
     <span id="dot"></span>
     <h1>backtalk transcript</h1>
     <span id="statusPill" class="status-pill">—</span>
+    <button id="hangupBtn" class="hangup-btn" type="button" hidden>Hang Up</button>
     <div class="settings-wrap">
       <button id="settingsBtn" class="icon-btn" type="button" title="Settings" aria-label="Settings">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
@@ -320,10 +358,58 @@
   var alignToggle = document.getElementById("alignToggle");
   var statusPill = document.getElementById("statusPill");
   var autoApproveToggle = document.getElementById("autoApproveToggle");
+  var hangupBtn = document.getElementById("hangupBtn");
 
   var since = 0;
   var bootId = null;
+  var isIdle = null;   // null = not known yet; true/false once a poll answers
   var pinnedToBottom = true;
+
+  hangupBtn.addEventListener("click", function () {
+    postInput("end voice mode");
+  });
+
+  function showIdleView() {
+    if (isIdle === true) return;   // already showing it -- don't rebuild/flicker
+    isIdle = true;
+    logEl.innerHTML = "";
+    var wrap = document.createElement("div");
+    wrap.id = "idleView";
+    var msg = document.createElement("div");
+    msg.className = "idle-msg";
+    msg.textContent = "No active voice session.";
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "start-btn";
+    btn.textContent = "Start Call";
+    btn.addEventListener("click", function () {
+      btn.disabled = true;
+      btn.textContent = "Starting…";
+      // No need to wait on this or poll for completion -- the
+      // existing 300ms poll loop picks up the real session (and
+      // flips back to the active view) the moment it comes up.
+      fetch("/start", { method: "POST" }).catch(function () {});
+    });
+    wrap.appendChild(msg);
+    wrap.appendChild(btn);
+    logEl.appendChild(wrap);
+    emptyEl = null;
+    statusPill.textContent = "Idle";
+    hangupBtn.hidden = true;
+    inputEl.disabled = true;
+    inputEl.placeholder = "No active call";
+    sendEl.disabled = true;
+  }
+
+  function showActiveView() {
+    if (isIdle === false) return;
+    isIdle = false;
+    resetLog();
+    hangupBtn.hidden = false;
+    inputEl.disabled = false;
+    inputEl.placeholder = "Type a message — same as speaking";
+    sendEl.disabled = false;
+  }
 
   var ALIGN_KEY = "backtalk-transcript-align-you-right";
   try {
@@ -408,14 +494,20 @@
         return r.json();
       })
       .then(function (data) {
+        // The idle placeholder (launcher.py, running whenever no call
+        // is active) answers {"idle": true} with no "boot" field at
+        // all -- check this BEFORE the boot-mismatch comparison below,
+        // since undefined !== a real bootId would otherwise look like
+        // a mismatch and wipe the view for no reason.
+        if (data.idle) return data;
         if (bootId !== null && data.boot !== bootId) {
           // backtalk restarted since our last poll (a crash, a
-          // relaunch): our cursor and everything on screen belongs to
-          // a process that's gone, and the new one's ids start back
-          // at 1, which our old cursor is already past. Wipe the view
-          // and pull this process's real history from the start,
-          // rather than silently polling forever and never showing
-          // anything new.
+          // relaunch, or a fresh call after being idle): our cursor
+          // and everything on screen belongs to a process that's
+          // gone, and the new one's ids start back at 1, which our
+          // old cursor is already past. Wipe the view and pull this
+          // process's real history from the start, rather than
+          // silently polling forever and never showing anything new.
           resetLog();
           since = 0;
           return fetch("/api/transcript?since=0")
@@ -425,6 +517,11 @@
       })
       .then(function (data) {
         dotEl.className = "ok";
+        if (data.idle) {
+          showIdleView();
+          return;
+        }
+        showActiveView();
         bootId = data.boot;
         renderState(data.state);
         var events = data.events || [];
