@@ -894,7 +894,8 @@ async def amain():
             tier="fast",
             model=brain.model,
             effort=boot_effort if boot_effort in _EFFORTS else "",
-            auto_approve=_AUTOAPPROVE["on"])
+            auto_approve=_AUTOAPPROVE["on"],
+            voice_mode=CFG.get("voice_mode", "cloud"))
 
     async def run_console(verb):
         """One voice-console verb. The current reply was already
@@ -988,6 +989,7 @@ async def amain():
                 mouth.say("Already on local voice.")
             else:
                 saved = _write_config_key("voice_mode", "local")
+                transcript_server.set_state(voice_mode="local")
                 mouth.say(("Switched to local voice. Speech now "
                            "generates on your own GPU, and that's "
                            "saved as your default. " if saved else
@@ -1001,6 +1003,7 @@ async def amain():
                 mouth.say("Already on cloud voice.")
             else:
                 saved = _write_config_key("voice_mode", "cloud")
+                transcript_server.set_state(voice_mode="cloud")
                 mouth.say(("Switched to cloud voice. Cartesia is now "
                            "active again, and that's saved as your "
                            "default. " if saved else

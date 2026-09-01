@@ -327,6 +327,15 @@
         </div>
         <div class="settings-section">
           <label class="settings-row">
+            <span>Local voice (Pocket TTS, not Cartesia)</span>
+            <span class="toggle">
+              <input type="checkbox" id="voiceLocalToggle">
+              <span class="toggle-track"><span class="toggle-knob"></span></span>
+            </span>
+          </label>
+        </div>
+        <div class="settings-section">
+          <label class="settings-row">
             <span>Auto-approve (stop asking for permission)</span>
             <span class="toggle">
               <input type="checkbox" id="autoApproveToggle">
@@ -358,6 +367,7 @@
   var alignToggle = document.getElementById("alignToggle");
   var statusPill = document.getElementById("statusPill");
   var autoApproveToggle = document.getElementById("autoApproveToggle");
+  var voiceLocalToggle = document.getElementById("voiceLocalToggle");
   var hangupBtn = document.getElementById("hangupBtn");
 
   var since = 0;
@@ -602,6 +612,9 @@
     if (document.activeElement !== autoApproveToggle) {
       autoApproveToggle.checked = !!state.auto_approve;
     }
+    if (document.activeElement !== voiceLocalToggle) {
+      voiceLocalToggle.checked = state.voice_mode === "local";
+    }
   }
 
   // The voice/text version of this is deliberately two steps ("stop
@@ -620,6 +633,11 @@
     } else {
       postInput("start asking again");
     }
+  });
+
+  voiceLocalToggle.addEventListener("change", function () {
+    postInput(voiceLocalToggle.checked
+      ? "switch to local voice" : "switch to cloud voice");
   });
 
   function autoGrow() {
