@@ -72,6 +72,23 @@ _next_id = 1
 
 _typed_q: "queue.Queue[str] | None" = None   # set by start()
 
+# Live session state (tier/effort/auto_approve) for the always-visible
+# status pill and the settings panel's toggle/button highlighting.
+# main.py owns these values and pushes changes here whenever one
+# actually changes -- nothing here polls or infers state on its own.
+_state: dict = {"tier": None, "effort": None, "auto_approve": None}
+
+
+def set_state(**kwargs):
+    """Update one or more live-state fields. Never raises, same rule as
+    add_event -- a broken status readout must never take the voice
+    line down."""
+    try:
+        with _lock:
+            _state.update(kwargs)
+    except Exception:
+        pass
+
 
 def add_event(speaker: str, text: str):
     """Append one transcript line. speaker: 'you' or 'samantha'. Never
@@ -119,7 +136,9 @@ class _Handler(BaseHTTPRequestHandler):
                 since_id = int(since_raw)
             except ValueError:
                 since_id = 0
-            self._send_json(200, {"boot": BOOT_ID,
+            with _lock:
+                state = dict(_state)
+            self._send_json(200, {"boot": BOOT_ID, "state": state,
                                   "events": _events_since(since_id)})
         else:
             self.send_response(404)

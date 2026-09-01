@@ -421,6 +421,7 @@ async def _apply_pending_switch(brain, mouth):
     key = _TIER_MODEL_KEY[tier]
     await brain.command(f"/model {CFG[key]}")
     mouth.say(_TIER_SAY[tier])
+    transcript_server.set_state(tier=tier)
     log(f"[tier]   switched to {tier} ({CFG[key]})")
 
 
@@ -875,6 +876,14 @@ async def amain():
         # parallel input path.
         transcript_server.start(typed_q, int(tui_cfg.get("port", 8793)),
                                 open_browser=bool(tui_cfg.get("open_browser", False)))
+        # A launch always boots on the fast tier (the rarely-used
+        # --model flag is the one exception, not worth a special label
+        # for); effort is whatever boot_effort above actually applied,
+        # "" meaning the model's own inherited default.
+        transcript_server.set_state(
+            tier="fast",
+            effort=boot_effort if boot_effort in _EFFORTS else "",
+            auto_approve=_AUTOAPPROVE["on"])
 
     async def run_console(verb):
         """One voice-console verb. The current reply was already
@@ -892,6 +901,11 @@ async def amain():
         _deny_pending()
         await brain.reset_turn()
         say_after = None
+        # Set only once a switch's own success/error check (below, where
+        # say_after actually gets spoken instead of an error) confirms
+        # it really happened -- never optimistically, so a failed switch
+        # can't leave the status pill lying about the live session.
+        state_update = None
         if verb == "clear":
             resp = await brain.command("/clear")
             say_after = "Cleared. Fresh slate."
@@ -905,15 +919,18 @@ async def amain():
                       "you're done.")
             resp = await brain.command(f"/model {CFG['deep_model']}")
             say_after = "Deep model online, for this session only."
+            state_update = {"tier": "deep"}
         elif verb == "cheap":
             mouth.say("Switching to the cheap model. Heads up, "
                       "reasoning gets shallower. Say back to the fast "
                       "model when you're done.")
             resp = await brain.command(f"/model {CFG['cheap_model']}")
             say_after = "Cheap model online, for this session only."
+            state_update = {"tier": "cheap"}
         elif verb == "fast":
             resp = await brain.command(f"/model {CFG['model']}")
             say_after = "Back on the fast model."
+            state_update = {"tier": "fast"}
         elif verb.startswith("effort:"):
             lvl = verb.split(":", 1)[1]
             resp = await brain.command(f"/effort {lvl}")
@@ -923,6 +940,7 @@ async def amain():
                          f"Effort set to {lvl} for this session. The "
                          "config file couldn't be written, so it won't "
                          "stick past a restart.")
+            state_update = {"effort": lvl}
         elif verb == "usage":
             resp = ""
             mouth.say(_spoken_usage(brain.session,
@@ -991,6 +1009,7 @@ async def amain():
             saved = _write_config_key("permission_mode",
                                       "bypassPermissions")
             _AUTOAPPROVE["on"] = True
+            transcript_server.set_state(auto_approve=True)
             log("[console] permission_mode -> bypassPermissions"
                 + (" (saved)" if saved else " (session only)"))
             mouth.say(("Auto-approve on, and saved as your default. "
@@ -1018,6 +1037,7 @@ async def amain():
             log("[console] permission_mode -> ask"
                 + (" (saved)" if saved else " (session only)"))
             if flipped:
+                transcript_server.set_state(auto_approve=False)
                 mouth.say("Done. I'll ask out loud before real "
                           "actions"
                           + (", and that's saved as your default."
@@ -1039,6 +1059,8 @@ async def amain():
                 log(f"[console] {verb} answered: {resp[:120]}")
             else:
                 mouth.say(say_after)
+                if state_update:
+                    transcript_server.set_state(**state_update)
         signals.set_state("idle")
 
     async def handle(text: str, spoke_from: float | None = None) -> bool:
