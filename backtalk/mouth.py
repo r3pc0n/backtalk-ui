@@ -553,6 +553,8 @@ def _stream_csm(text: str):
         except Exception as e:
             errors.append(e)
             streamer.queue.put(None)   # unblock the consumer below
+        finally:
+            torch.cuda.empty_cache()  # release fragmented cache; VRAM margin here is thin
 
     t = _threading.Thread(target=_run, daemon=True)
     t.start()
