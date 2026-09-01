@@ -164,7 +164,16 @@
   var sendEl = document.getElementById("send");
 
   var since = 0;
+  var bootId = null;
   var pinnedToBottom = true;
+
+  function resetLog() {
+    logEl.innerHTML = "";
+    emptyEl = document.createElement("div");
+    emptyEl.id = "empty";
+    emptyEl.textContent = "Waiting for the conversation to start…";
+    logEl.appendChild(emptyEl);
+  }
 
   logEl.addEventListener("scroll", function () {
     var gap = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight;
@@ -200,7 +209,24 @@
         return r.json();
       })
       .then(function (data) {
+        if (bootId !== null && data.boot !== bootId) {
+          // backtalk restarted since our last poll (a crash, a
+          // relaunch): our cursor and everything on screen belongs to
+          // a process that's gone, and the new one's ids start back
+          // at 1, which our old cursor is already past. Wipe the view
+          // and pull this process's real history from the start,
+          // rather than silently polling forever and never showing
+          // anything new.
+          resetLog();
+          since = 0;
+          return fetch("/api/transcript?since=0")
+            .then(function (r2) { return r2.json(); });
+        }
+        return data;
+      })
+      .then(function (data) {
         dotEl.className = "ok";
+        bootId = data.boot;
         var events = data.events || [];
         for (var i = 0; i < events.length; i++) {
           addRow(events[i]);

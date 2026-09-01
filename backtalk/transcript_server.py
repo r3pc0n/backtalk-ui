@@ -43,6 +43,7 @@ import json
 import queue
 import threading
 import time
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -52,6 +53,17 @@ from backtalk.vlog import log
 
 HERE = Path(__file__).resolve().parent
 WEB_DIR = HERE / "transcript_web"
+
+# One random id per process, handed back on every /api/transcript
+# response. The event buffer below is in-memory and its ids reset to 1
+# on every restart, so a browser tab left open across one (a crash, a
+# relaunch) would otherwise keep polling with a cursor from the OLD
+# process — which the new process's low ids never catch up to, so it
+# just looks stuck: green "connected" dot, nothing new ever appears.
+# Confirmed live (2026-09-01): a tab open before a restart silently
+# stopped updating after one. The client resets to since=0 the moment
+# this id doesn't match what it saw last.
+BOOT_ID = uuid.uuid4().hex
 
 _MAX_EVENTS = 2000
 _lock = threading.Lock()
@@ -91,7 +103,15 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        if parsed.path in ("/", "/index.html"):
+        if parsed.path in ("/", "/index.html", "/transcript", "/transcript/"):
+            # "/transcript/" exists so start.sh can launch this as its
+            # own app window: Chrome's --app window class comes from
+            # origin+path (port is NOT part of it), so serving only at
+            # bare "/" would collide with vault-graph's window class —
+            # both are 127.0.0.1 on a bare path, just different ports.
+            # Confirmed live: launching "/" produced the exact same
+            # chrome-127.0.0.1__-Default class vault-graph already
+            # uses. "/" itself still works for a manual bookmark/visit.
             self._serve_file(WEB_DIR / "index.html", "text/html")
         elif parsed.path == "/api/transcript":
             since_raw = parse_qs(parsed.query).get("since", ["0"])[0]
@@ -99,7 +119,8 @@ class _Handler(BaseHTTPRequestHandler):
                 since_id = int(since_raw)
             except ValueError:
                 since_id = 0
-            self._send_json(200, {"events": _events_since(since_id)})
+            self._send_json(200, {"boot": BOOT_ID,
+                                  "events": _events_since(since_id)})
         else:
             self.send_response(404)
             self.end_headers()
