@@ -53,7 +53,7 @@ SESSION_FILE = os.path.join(CFG["signals_dir"], ".backtalk_session")
 
 class WarmBrain:
     def __init__(self, model: str | None = None, can_use_tool=None,
-                 resume_id: str | None = None):
+                 resume_id: str | None = None, mcp_servers=None):
         # Full model id ON PURPOSE — never a bare alias. The SDK
         # resolves aliases through its own bundled CLI and can silently
         # land on an older model.
@@ -62,6 +62,10 @@ class WarmBrain:
         # connect in EVERY mode, so a live mode flip needs no reconnect;
         # bypass simply never consults it.
         self._can_use_tool = can_use_tool
+        # In-process SDK tools (main.py's suggest_tier, currently the
+        # only one) — a plain {name: McpServerConfig} dict, same shape
+        # create_sdk_mcp_server returns. None means no custom tools.
+        self._mcp_servers = mcp_servers or {}
         # Session usage, spoken on request ("usage report").
         self.session = {"turns": 0, "out_tokens": 0, "in_tokens": 0,
                         "cost": 0.0}
@@ -100,6 +104,7 @@ class WarmBrain:
                 include_partial_messages=True,
                 permission_mode=sdk_mode,
                 can_use_tool=self._can_use_tool,
+                mcp_servers=self._mcp_servers,
                 add_dirs=CFG["extra_dirs"],
                 skills=CFG["visible_skills"],
                 resume=rid,

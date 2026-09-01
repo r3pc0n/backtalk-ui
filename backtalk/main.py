@@ -219,6 +219,16 @@ def make_permission_gate(mouth):
                                   PermissionResultDeny)
 
     async def gate(tool, tool_input, ctx):
+        if tool == SUGGEST_TIER_TOOL_NAME:
+            # Not a permission decision (nothing risky happens either
+            # way) — always let the call through instantly, regardless
+            # of auto-approve. The actual ask-and-wait is the tool's
+            # OWN handler (see make_tier_tool_server), because a
+            # confirmation like this is a UX question for the human,
+            # not a safety gate: auto-approve exists to stop re-asking
+            # whether risky actions are safe, not to silently decide
+            # cost/quality tradeoffs on the person's behalf.
+            return PermissionResultAllow(behavior="allow")
         if _AUTOAPPROVE["on"]:
             return PermissionResultAllow(behavior="allow")
         what = _human_what(tool, tool_input, ctx)
@@ -297,6 +307,121 @@ def make_permission_gate(mouth):
             message=f'Denied by voice. The user said: "{answer[:500]}"',
             interrupt=False)
     return gate
+
+
+# ---- THE SUGGESTED TIER SWITCH: the agent proposes, a plain "yes"
+# confirms — an experiment (2026-09-01) so Des never has to nail an
+# exact console phrase to change model tier. Deliberately separate from
+# THE SPOKEN PERMISSION GATE above: that gate exists to stop re-asking
+# whether a RISKY action is safe (see gate()'s special case for this
+# tool's name), this is a cost/quality judgment call that's always
+# asked, auto-approve or not.
+#
+# The mechanics, and why they're shaped this way:
+# - suggest_tier is a real SDK tool (not text-pattern matching on my
+#   own spoken reply) so the trigger is structural, not prose the model
+#   could paraphrase away from under a pattern match — the exact
+#   failure mode that made the human-side console phrases fragile.
+# - The ask-and-wait happens in the tool's OWN handler, not the
+#   permission gate — reusing _PERM["fut"]/_PERM["asked_at"] on
+#   purpose: handle()'s existing routing ("a pending spoken ask owns
+#   the next utterance") already watches those two keys generically,
+#   so a plain "yeah" answering this ask gets routed correctly with NO
+#   new routing code, the same way it already does for permission asks.
+#   Only one ask is ever pending at a time in this single-threaded
+#   loop, so sharing the slot is safe, not a collision risk.
+# - The actual /model switch does NOT happen inside the tool call.
+#   WarmBrain has exactly one shared message stream (see
+#   brain.reset_turn's docstring on the off-by-one bug), and
+#   brain.command() would race that stream against the STILL-IN-
+#   PROGRESS ask_stream() call that triggered this very tool use.
+#   Confirmed safe instead: stash the approved tier in _PENDING_SWITCH,
+#   let the turn finish completely, and speak_reply() performs the
+#   actual switch right after its ask_stream() loop naturally ends —
+#   proven safe by a standalone probe script before this was wired in
+#   for real (a normal client.query() right after a tool-using turn
+#   completed cleanly, no desync).
+SUGGEST_TIER_TOOL_NAME = "mcp__backtalk__suggest_tier"
+_TIER_MODEL_KEY = {"cheap": "cheap_model", "deep": "deep_model", "fast": "model"}
+_TIER_SAY = {"cheap": "Cheap model online, for this stretch.",
+             "deep": "Deep model online, for this stretch.",
+             "fast": "Back on the fast model."}
+_PENDING_SWITCH = {"tier": None}
+
+
+def make_tier_tool_server(mouth):
+    """Builds the suggest_tier SDK tool + its one-tool MCP server.
+    Returns the {name: server} dict WarmBrain(mcp_servers=...) wants."""
+    from claude_agent_sdk import create_sdk_mcp_server, tool
+
+    @tool("suggest_tier",
+          "Propose switching the model tier for the upcoming stretch of "
+          "work, and ask the person to confirm out loud. Use this "
+          "instead of just saying the suggestion in your reply — only "
+          "this actually offers them a one-word way to confirm it. "
+          "Reach for it on a real shift (routine cleanup after "
+          "something meaty, or the reverse), not on every turn — "
+          "constantly narrating tier fit is its own kind of annoying. "
+          "tier is 'cheap' (Haiku, routine work), 'deep' (Opus, hard "
+          "reasoning), or 'fast' (Sonnet, back to the default). pitch "
+          "is what you actually say out loud to propose it — your own "
+          "words, one or two sentences, ending in a yes/no question.",
+          {"tier": str, "pitch": str})
+    async def suggest_tier(args):
+        tier = str(args.get("tier") or "").strip().lower()
+        pitch = str(args.get("pitch") or "").strip()
+        if tier not in _TIER_MODEL_KEY:
+            return {"content": [{"type": "text",
+                    "text": f"Unknown tier {tier!r} (must be cheap, deep, "
+                            "or fast) — nothing asked, nothing changed."}]}
+        mouth.say(pitch or f"Want me on the {tier} tier for this?")
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        _PERM["fut"] = fut
+        _PERM["asked_at"] = time.monotonic()
+        try:
+            try:
+                got = await asyncio.wait_for(asyncio.shield(fut), 45.0)
+            except asyncio.TimeoutError:
+                fut.cancel()
+                return {"content": [{"type": "text",
+                        "text": "No answer within the timeout — stay on "
+                                "the current tier and just carry on."}]}
+        finally:
+            _PERM["fut"] = None
+        if got == _INTERRUPT_ANSWER:
+            return {"content": [{"type": "text",
+                    "text": "Interrupted before they answered — stay on "
+                            "the current tier."}]}
+        if _norm_speech(got) in _YES:
+            _PENDING_SWITCH["tier"] = tier
+            log(f"[tier]   suggestion approved: {tier}")
+            return {"content": [{"type": "text",
+                    "text": f"They said yes. The switch to {tier} will "
+                            "happen right after this reply, so acknowledge "
+                            "it naturally but don't claim it's already "
+                            "active yet."}]}
+        log(f"[tier]   suggestion declined: {got!r}")
+        return {"content": [{"type": "text",
+                "text": f'They didn\'t confirm. They said: "{got[:300]}" — '
+                        "stay on the current tier and respond to what "
+                        "they actually said."}]}
+
+    return {"backtalk": create_sdk_mcp_server(
+        name="backtalk", version="0.1.0", tools=[suggest_tier])}
+
+
+async def _apply_pending_switch(brain, mouth):
+    """Called right after a turn's ask_stream() loop naturally ends —
+    never from inside the tool call itself, see the design note above."""
+    tier = _PENDING_SWITCH["tier"]
+    if not tier:
+        return
+    _PENDING_SWITCH["tier"] = None
+    key = _TIER_MODEL_KEY[tier]
+    await brain.command(f"/model {CFG[key]}")
+    mouth.say(_TIER_SAY[tier])
+    log(f"[tier]   switched to {tier} ({CFG[key]})")
 
 
 # ---- THE VOICE CONSOLE: session verbs, spoken. Exact phrases only,
@@ -640,6 +765,12 @@ async def speak_reply(brain: WarmBrain, mouth: Mouth, text: str):
             # will ever dequeue, so nothing resets the bus — park it here.
             signals.static_stop()
             signals.set_state("idle")
+        # Safe ONLY here: ask_stream()'s receive_response() has already
+        # consumed through this turn's ResultMessage (that's what ends
+        # the loop above), so the client is idle — see the design note
+        # above SUGGEST_TIER_TOOL_NAME for why this can't happen any
+        # earlier, e.g. from inside the tool call itself.
+        await _apply_pending_switch(brain, mouth)
     except asyncio.CancelledError:
         try:
             await brain.interrupt()
@@ -676,7 +807,8 @@ async def amain():
     ears = Ears()
     brain = WarmBrain(model=model,
                       can_use_tool=make_permission_gate(mouth),
-                      resume_id=resume_id)
+                      resume_id=resume_id,
+                      mcp_servers=make_tier_tool_server(mouth))
 
     mode = ("hands-free listening (the talk key still works)"
             if _MIC["mode"] == "open"
