@@ -211,15 +211,50 @@ DEFAULTS = {
         # seeding a second copy of the same secret.
         "key_slot": "backtalk-cartesia",
     },
+    # Optional local voice, tried BEFORE csm below in "local" voice_mode:
+    # Pocket TTS (kyutai-labs/pocket-tts), CPU-only, no GPU contention.
+    # Runs as its own local HTTP server in its OWN venv (mouth
+    # ._ensure_pocket starts/stops it) rather than as a dependency of
+    # this one — its CPU-only torch would otherwise fight backtalk's
+    # GPU-torch venv the same way the CSM install once did (see
+    # backtalk.md's setuptools incident). Falls back to csm (if
+    # enabled) then Kokoro on any failure — mouth.synth_stream.
+    "pocket": {
+        "enabled": False,
+        # Base URL of a `pocket-tts serve` instance. mouth._ensure_pocket
+        # starts one at this address if nothing's already listening there.
+        "url": "http://localhost:8124/",
+        # Path to the `pocket-tts` binary from ITS OWN venv (not this
+        # one). "" -> looks for it next to this repo, at
+        # ../pocket-tts/.venv/bin/pocket-tts.
+        "bin": "",
+        # Voice cloning source: a short reference clip (any format
+        # ffmpeg reads) of the target voice. Exported once to
+        # voices/<voice>.safetensors (git-ignored, regenerated on
+        # demand — see backtalk.md) the first time it's needed, then
+        # served locally so pocket-tts's voice_url can fetch it fast —
+        # passing the raw file directly re-embeds the voice from
+        # scratch on EVERY sentence (~4s each, measured), instead of
+        # ~1.4s once cached this way. "" and no existing
+        # voices/<voice>.safetensors means enabling this will fail loudly.
+        "reference_audio": "",
+        "voice": "samantha",
+        # Localhost-only static file server backtalk itself starts on
+        # first use, just to hand pocket-tts's voice_url a fetchable
+        # URL for the exported .safetensors — see mouth._ensure_pocket.
+        "file_port": 8126,
+    },
     # Optional local voice, alternative to Kokoro: CSM (sesame/csm-1b) via
     # HuggingFace Transformers, in-process on your own GPU. No API key, no
     # network per request — but it's a ~1B-parameter model, so it wants
     # CUDA (slow on CPU) and needs `hf auth login` once to accept the
-    # gated model. Sits BELOW ElevenLabs/Cartesia and ABOVE Kokoro in
-    # mouth.synth_stream: tried only when neither cloud engine is
-    # enabled/ready, falls back to Kokoro on any load or generation
-    # failure. Loaded lazily on first use (not at warm()), so enabling
-    # this costs nothing until the first sentence actually needs it.
+    # gated model. Sits BELOW pocket above and ABOVE Kokoro in
+    # mouth.synth_stream: tried only when pocket is disabled or fails,
+    # falls back to Kokoro on any load or generation failure. Loaded
+    # lazily on first use (not at warm()), so enabling this costs
+    # nothing until the first sentence actually needs it. Parked as of
+    # 2026-09-01 (disabled by default) in favor of Pocket TTS's more
+    # consistent, non-stochastic delivery — see backtalk.md.
     "csm": {
         "enabled": False,
         # Which of csm-1b's speaker identities to use.

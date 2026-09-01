@@ -25,10 +25,13 @@ Cartesia, on YOUR key — read from the system keychain, never from a file
 automatic fallback: the voice degrades instead of going mute if the
 cloud fails. Cartesia wins if both are enabled at once (see
 synth_stream). Cartesia needs no ffmpeg step — it hands back raw PCM
-directly in the format we ask for. A third, local-GPU option, CSM
-(sesame/csm-1b via HuggingFace Transformers), sits below both cloud
-engines and above Kokoro — no API key, no network per request, but
-needs CUDA and a one-time `hf auth login` to accept the gated model.
+directly in the format we ask for. The local-mode equivalent is Pocket
+TTS (kyutai-labs/pocket-tts) — CPU-only, no GPU contention, run as its
+own local HTTP server in its own venv (see _ensure_pocket) rather than
+imported into this one. A second local-GPU option, CSM (sesame/csm-1b
+via HuggingFace Transformers), sits below Pocket TTS and above Kokoro —
+parked as of 2026-09-01 (config default disabled) in favor of Pocket's
+consistent, non-stochastic delivery, but left in place for later.
 
 Sentences are synthesized one at a time and queued for playback, so the
 first sentence is audible while later ones are still rendering. Playback
@@ -63,6 +66,7 @@ KOKORO_RATE = 24000
 EL_RATE = 44100
 CARTESIA_RATE = 44100
 CSM_RATE = 24000
+POCKET_RATE = 24000
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 
 _pipe = None
@@ -72,6 +76,10 @@ _csm_model = None
 _csm_processor = None
 _csm_reference = None      # cached voice-anchor conversation turn, or None
 _csm_lock = threading.Lock()
+
+_pocket_proc = None        # subprocess.Popen of `pocket-tts serve`, or None
+_pocket_file_httpd = None  # localhost static file server for the voice, or None
+_pocket_lock = threading.Lock()
 
 
 def _ensure_espeak():
@@ -571,14 +579,181 @@ def _stream_csm(text: str):
         raise errors[0]
 
 
+def _pocket_server_healthy(base_url: str) -> bool:
+    import httpx
+    try:
+        return httpx.get(f"{base_url}/health", timeout=1.0).status_code == 200
+    except Exception:
+        return False
+
+
+def _ensure_pocket():
+    """Lazy-start Pocket TTS (kyutai-labs/pocket-tts) and the cloned
+    voice it needs. Two things this owns and must also tear down (see
+    _shutdown_pocket, called from Mouth.shutdown): the `pocket-tts
+    serve` subprocess itself, and a tiny localhost-only static file
+    server that exists ONLY so pocket-tts's voice_url can fetch the
+    exported voice — its HTTP API takes a URL (http://, https://, or
+    hf://) or a raw file upload, never a bare local path (confirmed
+    against the live server's /openapi.json, since the docs don't spell
+    the API out). Uploading the raw reference audio on every call works
+    too, but re-embeds the voice from scratch each time — measured at
+    ~4s/sentence, vs ~1.4s/sentence once exported to .safetensors and
+    served locally by URL, which is why this exists instead of a
+    simpler one-shot upload.
+
+    Deliberately NOT a dependency of backtalk's own venv: pocket-tts
+    pulls its own (CPU-only) torch, and mixing that into backtalk's
+    GPU-torch venv risks the exact transitive setuptools/CUDA
+    regression the CSM install caused once already (see backtalk.md,
+    "installing ML deps silently broke the real entrypoint"). It runs
+    from its own separate venv as a separate process instead, reached
+    only over HTTP — same arm's-length relationship Cartesia/ElevenLabs
+    have, just local instead of cloud."""
+    import functools
+    import subprocess
+    import time
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
+
+    global _pocket_proc, _pocket_file_httpd
+    with _pocket_lock:
+        cfg = CFG["pocket"]
+        repo_root = Path(__file__).resolve().parents[1]
+        voices_dir = repo_root / "voices"
+        voices_dir.mkdir(exist_ok=True)
+        voice = cfg["voice"]
+        safet = voices_dir / f"{voice}.safetensors"
+        pocket_bin = cfg.get("bin") or str(
+            repo_root.parent / "pocket-tts" / ".venv" / "bin" / "pocket-tts")
+        if not Path(pocket_bin).exists():
+            raise RuntimeError(
+                f"pocket-tts binary not found at {pocket_bin} — install it "
+                f"(see backtalk.md) or set pocket.bin to its real path")
+
+        if not safet.exists():
+            ref = cfg.get("reference_audio") or ""
+            if not ref:
+                raise RuntimeError(
+                    f"pocket.reference_audio not set and {safet.name} "
+                    f"hasn't been exported yet")
+            wav = voices_dir / f"{voice}-reference.wav"
+            log(f"[mouth] exporting Pocket TTS voice '{voice}' from {ref}...")
+            # pocket-tts needs soundfile to read anything but plain WAV
+            # (confirmed live: raw .mp3 upload 500s with
+            # "ImportError: soundfile is required...") — converting once
+            # here avoids adding that dependency to either venv.
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", ref, "-ar", "24000", "-ac", "1", str(wav)],
+                check=True, capture_output=True)
+            subprocess.run([pocket_bin, "export-voice", str(wav), str(safet)],
+                           check=True, capture_output=True)
+            log(f"[mouth] Pocket TTS voice '{voice}' exported to {safet.name}")
+
+        base_url = cfg["url"].rstrip("/")
+        if not _pocket_server_healthy(base_url):
+            port = base_url.rsplit(":", 1)[-1]
+            log(f"[mouth] starting pocket-tts serve on port {port}...")
+            log_path = repo_root / "logs" / "pocket-tts.log"
+            log_path.parent.mkdir(exist_ok=True)
+            with open(log_path, "ab") as logf:
+                _pocket_proc = subprocess.Popen(
+                    [pocket_bin, "serve", "--port", port],
+                    stdout=logf, stderr=subprocess.STDOUT)
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                if _pocket_server_healthy(base_url):
+                    break
+                time.sleep(0.5)
+            else:
+                raise RuntimeError(
+                    f"pocket-tts serve did not become healthy within 30s "
+                    f"(see {log_path})")
+            log("[mouth] pocket-tts ready")
+
+        if _pocket_file_httpd is None:
+            handler = functools.partial(SimpleHTTPRequestHandler, directory=str(voices_dir))
+            _pocket_file_httpd = ThreadingHTTPServer(
+                ("127.0.0.1", int(cfg["file_port"])), handler)
+            threading.Thread(target=_pocket_file_httpd.serve_forever, daemon=True).start()
+            log(f"[mouth] pocket voice file server up on 127.0.0.1:{cfg['file_port']}")
+
+
+def _shutdown_pocket():
+    """Tear down what _ensure_pocket started, so backtalk exiting
+    doesn't leave an orphaned pocket-tts server or file thread behind —
+    the same class of leak the CSM shutdown fix closed for the GPU and
+    the instance-port lock (2026-09-01)."""
+    import subprocess
+    global _pocket_proc, _pocket_file_httpd
+    with _pocket_lock:
+        if _pocket_file_httpd is not None:
+            _pocket_file_httpd.shutdown()
+            _pocket_file_httpd = None
+        if _pocket_proc is not None:
+            _pocket_proc.terminate()
+            try:
+                _pocket_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _pocket_proc.kill()
+            _pocket_proc = None
+
+
+def _stream_pocket(text: str):
+    """Pocket TTS -> int16 PCM at POCKET_RATE.
+
+    Its /tts response is a real WAV (confirmed against the live
+    server, not the docs, which don't specify this), sent over chunked
+    transfer. Skip the RIFF/fmt header once by scanning for the "data"
+    subchunk marker, then it's raw s16le PCM same as Cartesia's
+    response — the rest of this mirrors _stream_cartesia exactly."""
+    import httpx
+
+    cfg = CFG["pocket"]
+    _ensure_pocket()
+    base_url = cfg["url"].rstrip("/")
+    voice_url = f"http://127.0.0.1:{cfg['file_port']}/{cfg['voice']}.safetensors"
+    header_buf = b""
+    past_header = False
+    carry = b""
+    with httpx.stream("POST", f"{base_url}/tts",
+                      data={"text": text, "voice_url": voice_url},
+                      timeout=30.0) as r:
+        r.raise_for_status()
+        for chunk in r.iter_bytes(chunk_size=4096):
+            if not past_header:
+                header_buf += chunk
+                idx = header_buf.find(b"data")
+                if idx == -1 or len(header_buf) < idx + 8:
+                    continue
+                chunk = header_buf[idx + 8:]  # past "data" + its 4-byte size field
+                past_header = True
+                if not chunk:
+                    continue
+            data = carry + chunk
+            usable = len(data) - (len(data) % 2)
+            carry = data[usable:]
+            if usable:
+                yield np.frombuffer(data[:usable], dtype=np.int16)
+
+
 def synth_stream(text: str, timeout: float = 30.0):
     """One sentence -> yields (sample_rate, pcm_chunk) as the TTS
     renders. voice_mode is the explicit switch (the voice console's
     "switch to local/cloud voice"): "cloud" (the default) tries
-    Cartesia then ElevenLabs; "local" tries CSM instead, skipping both
-    cloud engines entirely. Kokoro is always the final fallback, on
-    ANY failure in either mode. Degrade, never mute."""
+    Cartesia then ElevenLabs; "local" tries Pocket TTS, then CSM (if
+    enabled — parked/disabled by default as of 2026-09-01), skipping
+    both cloud engines entirely. Kokoro is always the final fallback,
+    on ANY failure in either mode. Degrade, never mute."""
     if CFG.get("voice_mode", "cloud") == "local":
+        if CFG.get("pocket", {}).get("enabled"):
+            try:
+                for pcm in _stream_pocket(text):
+                    yield POCKET_RATE, pcm
+                return
+            except Exception as e:
+                log(f"[mouth] pocket failed ({str(e)[:60]}) — "
+                    f"falling back to {CFG['voice']}")
         if CFG.get("csm", {}).get("enabled"):
             try:
                 for pcm in _stream_csm(text):
@@ -657,6 +832,7 @@ class Mouth:
         (the debounced restore timer dies with the process otherwise)."""
         self.shut_up()
         self.ducker.restore_now()
+        _shutdown_pocket()
 
     def wait_done(self, timeout: float | None = None):
         """Block until the queue is drained and playback finished."""
@@ -798,3 +974,4 @@ if __name__ == "__main__":
     m.say(sys.argv[1] if len(sys.argv) > 1 else
           "Voice check. The mouth is alive, and it is very good to be heard.")
     m.wait_done(timeout=60)
+    m.shutdown()  # else a pocket-tts (or future subprocess-backed engine) test run orphans it
