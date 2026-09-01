@@ -19,10 +19,16 @@
 long-lived output stream.
 
 Default engine: Kokoro, in-process. Local, free, no server, no API key,
-~0.2s to first audio once warm. Optional premium engine: ElevenLabs on
-YOUR key — read from the system keychain, never from a file (see
-_get_elevenlabs_key) — with Kokoro as the automatic fallback: the voice
-degrades instead of going mute if the cloud fails.
+~0.2s to first audio once warm. Optional premium engines: ElevenLabs or
+Cartesia, on YOUR key — read from the system keychain, never from a file
+(see _get_elevenlabs_key / _get_cartesia_key) — with Kokoro as the
+automatic fallback: the voice degrades instead of going mute if the
+cloud fails. Cartesia wins if both are enabled at once (see
+synth_stream). Cartesia needs no ffmpeg step — it hands back raw PCM
+directly in the format we ask for. A third, local-GPU option, CSM
+(sesame/csm-1b via HuggingFace Transformers), sits below both cloud
+engines and above Kokoro — no API key, no network per request, but
+needs CUDA and a one-time `hf auth login` to accept the gated model.
 
 Sentences are synthesized one at a time and queued for playback, so the
 first sentence is audible while later ones are still rendering. Playback
@@ -55,10 +61,17 @@ from backtalk.vlog import log
 
 KOKORO_RATE = 24000
 EL_RATE = 44100
+CARTESIA_RATE = 44100
+CSM_RATE = 24000
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 
 _pipe = None
 _pipe_lock = threading.Lock()
+
+_csm_model = None
+_csm_processor = None
+_csm_reference = None      # cached voice-anchor conversation turn, or None
+_csm_lock = threading.Lock()
 
 
 def _ensure_espeak():
@@ -261,13 +274,54 @@ def _stream_elevenlabs(text: str, timeout: float):
         raise feed_error[0]
 
 
+def _stream_cartesia(text: str, timeout: float):
+    """Cartesia -> int16 PCM at CARTESIA_RATE, no decode step.
+
+    Unlike ElevenLabs, we ask for raw pcm_s16le at the exact sample rate
+    we play back, so the response body IS the PCM stream — stream the
+    HTTP response straight into int16 chunks, no ffmpeg subprocess."""
+    import httpx
+
+    ca = CFG["cartesia"]
+    key = _get_cartesia_key()
+    body = {
+        "model_id": ca["model"],
+        "transcript": text,
+        "voice": {"id": ca["voice_id"]},
+        "output_format": {
+            "container": "raw",
+            "encoding": "pcm_s16le",
+            "sample_rate": CARTESIA_RATE,
+        },
+    }
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Cartesia-Version": "2026-08-14",
+    }
+    carry = b""
+    with httpx.stream("POST", "https://api.cartesia.ai/tts/bytes",
+                      headers=headers, json=body, timeout=timeout) as r:
+        r.raise_for_status()
+        for chunk in r.iter_bytes(chunk_size=4096):
+            data = carry + chunk
+            usable = len(data) - (len(data) % 2)
+            carry = data[usable:]
+            if usable:
+                yield np.frombuffer(data[:usable], dtype=np.int16)
+
+
 _el_key_cache: str | None = None
+_ca_key_cache: str | None = None
 
 
-def _key_slot() -> str:
+def _el_key_slot() -> str:
     """The credential-store entry name, so someone who already keeps a key
     under their own name points at it instead of storing a second copy."""
     return str(CFG["elevenlabs"].get("key_slot") or "backtalk-elevenlabs")
+
+
+def _ca_key_slot() -> str:
+    return str(CFG["cartesia"].get("key_slot") or "backtalk-cartesia")
 
 
 def _get_elevenlabs_key() -> str:
@@ -292,7 +346,7 @@ def _get_elevenlabs_key() -> str:
     try:
         if sys.platform == "darwin":
             r = subprocess.run(["security", "find-generic-password",
-                                "-s", _key_slot(), "-w"],
+                                "-s", _el_key_slot(), "-w"],
                                capture_output=True, text=True, timeout=5)
             if r.returncode == 0:
                 key = r.stdout.strip()
@@ -300,7 +354,7 @@ def _get_elevenlabs_key() -> str:
             from shutil import which
             if which("secret-tool"):
                 r = subprocess.run(["secret-tool", "lookup", "service",
-                                    _key_slot()],
+                                    _el_key_slot()],
                                    capture_output=True, text=True, timeout=5)
                 if r.returncode == 0:
                     key = r.stdout.strip()
@@ -316,18 +370,238 @@ def _elevenlabs_ready() -> bool:
                 and _get_elevenlabs_key())
 
 
+def _get_cartesia_key() -> str:
+    """The API key, from the most secure store available — NEVER from a
+    file in this repo. Same lookup order as _get_elevenlabs_key:
+      1. macOS Keychain, item `backtalk-cartesia` by default (change it
+         with cartesia.key_slot) — seed it once with:
+         security add-generic-password -a "$USER" -s backtalk-cartesia -T /usr/bin/security -w
+      2. Linux secret-tool (libsecret):
+         secret-tool store --label backtalk service backtalk-cartesia
+      3. the CARTESIA_API_KEY environment variable — last-resort
+         fallback, same tradeoff as the ElevenLabs one: a plaintext key
+         on disk instead of in the keychain."""
+    global _ca_key_cache
+    if _ca_key_cache is not None:
+        return _ca_key_cache
+    import subprocess
+    key = ""
+    try:
+        if sys.platform == "darwin":
+            r = subprocess.run(["security", "find-generic-password",
+                                "-s", _ca_key_slot(), "-w"],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                key = r.stdout.strip()
+        elif sys.platform.startswith("linux"):
+            from shutil import which
+            if which("secret-tool"):
+                r = subprocess.run(["secret-tool", "lookup", "service",
+                                    _ca_key_slot()],
+                                   capture_output=True, text=True, timeout=5)
+                if r.returncode == 0:
+                    key = r.stdout.strip()
+    except Exception:
+        pass
+    _ca_key_cache = key or os.environ.get("CARTESIA_API_KEY", "")
+    return _ca_key_cache
+
+
+def _cartesia_ready() -> bool:
+    ca = CFG["cartesia"]
+    return bool(ca.get("enabled") and ca.get("voice_id")
+                and _get_cartesia_key())
+
+
+def _ensure_csm():
+    """Lazy-load CSM (sesame/csm-1b) and its optional voice-anchor
+    reference — first call downloads the model from HF (gated; needs
+    `hf auth login` once) and puts it on GPU if available. Loaded under
+    a lock so concurrent sentences don't race the load."""
+    global _csm_model, _csm_processor, _csm_reference
+    with _csm_lock:
+        if _csm_model is None:
+            import torch
+            from transformers import AutoProcessor, CsmForConditionalGeneration
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            log(f"[mouth] loading CSM (device {device})...")
+            _csm_processor = AutoProcessor.from_pretrained("sesame/csm-1b")
+            _csm_model = CsmForConditionalGeneration.from_pretrained(
+                "sesame/csm-1b", device_map=device)
+            log("[mouth] CSM ready")
+            ref_path = CFG["csm"].get("reference_audio") or ""
+            if ref_path:
+                _csm_reference = {
+                    "role": str(CFG["csm"]["speaker"]),
+                    "content": [
+                        {"type": "text",
+                         "text": CFG["csm"].get("reference_text") or ""},
+                        {"type": "audio", "path": ref_path},
+                    ],
+                }
+                log(f"[mouth] CSM voice reference loaded from {ref_path}")
+    return _csm_model, _csm_processor
+
+
+def _stream_csm(text: str):
+    """CSM -> int16 PCM chunks at CSM_RATE, released as generation goes
+    instead of waiting for the whole sentence. Raises on any failure;
+    synth_stream's except clause is what falls back to Kokoro, same as
+    the other engines.
+
+    CSM's generate() calls streamer.put() once per ~80ms audio FRAME
+    (codebook tokens), from inside its own sampling loop -- see
+    transformers.models.csm.generation_csm.CsmGenerationMixin._sample.
+    That's the real hook. Turning frames into audio incrementally is
+    the part transformers doesn't give us for free: Mimi's decoder
+    TRANSFORMER supports genuine incremental attention caching across
+    decode() calls, but its final conv upsampling stack has no
+    cross-call state at all -- every decode() call runs those causal
+    convolutions as if preceded by silence. _CsmAudioStreamer below
+    works around that the standard way for a codec with no exposed
+    conv cache: each chunk re-decodes a small window of already-
+    decoded trailing context plus the new frames, and keeps only the
+    newly-decoded tail -- the context's own output is recomputed only
+    to prime the convolutions with real history, then thrown away."""
+    import queue as _queue
+    import threading as _threading
+
+    import torch
+    from transformers.generation.streamers import BaseStreamer
+
+    cfg = CFG["csm"]
+    model, processor = _ensure_csm()
+    speaker = str(cfg["speaker"])
+    conversation = []
+    if _csm_reference is not None:
+        conversation.append(_csm_reference)
+    conversation.append({"role": speaker, "content": [{"type": "text", "text": text}]})
+    inputs = processor.apply_chat_template(
+        conversation, tokenize=True, return_dict=True).to(model.device)
+    # Mimi codec runs at 12.5Hz -> 80ms/token.
+    max_new_tokens = max(1, int(cfg["max_audio_length_ms"]) // 80)
+
+    class _CsmAudioStreamer(BaseStreamer):
+        CHUNK_FRAMES = 8      # ~640ms of new audio released per chunk
+        CONTEXT_FRAMES = 4    # trailing frames re-fed to prime the conv decoder
+
+        def __init__(self, codec_model, eos_id, num_codebooks):
+            self.codec_model = codec_model
+            self.eos_id = eos_id
+            self.num_codebooks = num_codebooks
+            self.queue: _queue.Queue = _queue.Queue()
+            self._frames: list = []
+            self._decoded_through = 0
+
+        def put(self, value):
+            # generate()'s base machinery also calls streamer.put(input_ids)
+            # once for the whole prompt before our per-frame pushes ever
+            # start (transformers/generation/utils.py, the plain prompt
+            # echo every streamer gets) -- that push is shaped (batch,
+            # prompt_len), nothing like a single codebook frame, so it has
+            # to be filtered out here rather than assumed away.
+            if value.dim() != 2 or value.shape[-1] != self.num_codebooks:
+                return
+            frame = value[0]      # batch size is always 1 here
+            if bool((frame == self.eos_id).all()):
+                return             # the EOS frame itself carries no audio
+            self._frames.append(frame)
+            if len(self._frames) - self._decoded_through >= self.CHUNK_FRAMES:
+                self._flush()
+
+        def end(self):
+            self._flush()
+            self.queue.put(None)
+
+        def _flush(self):
+            new_count = len(self._frames) - self._decoded_through
+            if new_count <= 0:
+                return
+            ctx_start = max(0, self._decoded_through - self.CONTEXT_FRAMES)
+            window = self._frames[ctx_start:]
+            # generate()'s own loop pushes streamer.put(next_tokens.cpu())
+            # (see the docstring above), so window's frames are CPU
+            # tensors -- move back to the codec's device before decoding.
+            codes = torch.stack(window, dim=0).transpose(0, 1).unsqueeze(0).to(model.device)
+            with torch.no_grad():
+                out = self.codec_model.decode(audio_codes=codes, return_dict=True)
+            audio = out.audio_values[0, 0]
+            per_frame = audio.shape[-1] / len(window)
+            drop = round((self._decoded_through - ctx_start) * per_frame)
+            new_audio = audio[drop:]
+            self._decoded_through = len(self._frames)
+            if new_audio.numel():
+                self.queue.put(new_audio.detach().cpu().numpy())
+
+    streamer = _CsmAudioStreamer(model.codec_model, model.config.codebook_eos_token_id,
+                                  model.config.num_codebooks)
+    errors: list = []
+
+    def _run():
+        try:
+            with torch.no_grad():
+                model.generate(
+                    **inputs,
+                    output_audio=False,   # we decode incrementally ourselves
+                    max_new_tokens=max_new_tokens,
+                    do_sample=True,
+                    temperature=float(cfg["temperature"]),
+                    top_k=int(cfg["topk"]),
+                    streamer=streamer,
+                )
+            # success: generate() already called streamer.end() for us
+        except Exception as e:
+            errors.append(e)
+            streamer.queue.put(None)   # unblock the consumer below
+
+    t = _threading.Thread(target=_run, daemon=True)
+    t.start()
+    try:
+        while True:
+            chunk = streamer.queue.get()
+            if chunk is None:
+                break
+            audio_array = np.clip(chunk, -1.0, 1.0)
+            yield (audio_array * 32767).astype(np.int16)
+    finally:
+        t.join()
+    if errors:
+        raise errors[0]
+
+
 def synth_stream(text: str, timeout: float = 30.0):
     """One sentence -> yields (sample_rate, pcm_chunk) as the TTS
-    renders. ElevenLabs when configured, Kokoro otherwise — and Kokoro
-    as the fallback on ANY ElevenLabs failure. Degrade, never mute."""
-    if _elevenlabs_ready():
-        try:
-            for pcm in _stream_elevenlabs(text, timeout):
-                yield EL_RATE, pcm
-            return
-        except Exception as e:
-            log(f"[mouth] elevenlabs failed ({str(e)[:60]}) — "
-                f"falling back to {CFG['voice']}")
+    renders. voice_mode is the explicit switch (the voice console's
+    "switch to local/cloud voice"): "cloud" (the default) tries
+    Cartesia then ElevenLabs; "local" tries CSM instead, skipping both
+    cloud engines entirely. Kokoro is always the final fallback, on
+    ANY failure in either mode. Degrade, never mute."""
+    if CFG.get("voice_mode", "cloud") == "local":
+        if CFG.get("csm", {}).get("enabled"):
+            try:
+                for pcm in _stream_csm(text):
+                    yield CSM_RATE, pcm
+                return
+            except Exception as e:
+                log(f"[mouth] csm failed ({str(e)[:60]}) — "
+                    f"falling back to {CFG['voice']}")
+    else:
+        if _cartesia_ready():
+            try:
+                for pcm in _stream_cartesia(text, timeout):
+                    yield CARTESIA_RATE, pcm
+                return
+            except Exception as e:
+                log(f"[mouth] cartesia failed ({str(e)[:60]}) — "
+                    f"falling back to {CFG['voice']}")
+        if _elevenlabs_ready():
+            try:
+                for pcm in _stream_elevenlabs(text, timeout):
+                    yield EL_RATE, pcm
+                return
+            except Exception as e:
+                log(f"[mouth] elevenlabs failed ({str(e)[:60]}) — "
+                    f"falling back to {CFG['voice']}")
     for pcm in _stream_kokoro(text):
         yield KOKORO_RATE, pcm
 

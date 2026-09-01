@@ -31,7 +31,10 @@ session" / "compact the session" / "switch to the deep model" / "back
 to the fast model" / "set effort to low" (or medium, high, max) /
 "usage report" / "go hands free" and "push to talk mode" (the MIC) /
 "stop asking for permission" and "start asking again" (permissions,
-called auto-approve, a different axis than the microphone on purpose).
+called auto-approve, a different axis than the microphone on purpose) /
+"switch to local voice" and "switch to cloud voice" (voice_mode: which
+family of premium TTS engine goes first, cloud's Cartesia/ElevenLabs or
+local's CSM — Kokoro is always the fallback either way).
 And with permission_mode "ask" (the default), gated tool calls ASK OUT
 LOUD and your spoken yes or no decides them; any other answer is
 passed back to the agent as the reason.
@@ -325,6 +328,10 @@ CONSOLE_VERBS = {
                   "auto approve mode"),
     "ask":       ("start asking again", "ask before acting",
                   "ask for permission again"),
+    "voicelocal": ("switch to local voice", "use local voice",
+                   "local voice mode", "switch to the local voice"),
+    "voicecloud": ("switch to cloud voice", "use cloud voice",
+                   "cloud voice mode", "switch to the cloud voice"),
 }
 _EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
@@ -794,6 +801,32 @@ async def amain():
                 key = str(CFG.get("ptt_key", "home")).replace("_", " ")
                 mouth.say(f"Push to talk. Hold the {key} key and "
                           "talk; the mic stays closed otherwise.")
+        elif verb == "voicelocal":
+            resp = ""
+            if CFG.get("voice_mode", "cloud") == "local":
+                mouth.say("Already on local voice.")
+            else:
+                saved = _write_config_key("voice_mode", "local")
+                mouth.say(("Switched to local voice. Speech now "
+                           "generates on your own GPU, and that's "
+                           "saved as your default. " if saved else
+                           "Switched to local voice for this session. "
+                           "The config file couldn't be written, so "
+                           "tell me again after a restart. ")
+                          + "Say switch to cloud voice to go back.")
+        elif verb == "voicecloud":
+            resp = ""
+            if CFG.get("voice_mode", "cloud") != "local":
+                mouth.say("Already on cloud voice.")
+            else:
+                saved = _write_config_key("voice_mode", "cloud")
+                mouth.say(("Switched to cloud voice. Cartesia is now "
+                           "active again, and that's saved as your "
+                           "default. " if saved else
+                           "Switched to cloud voice for this session. "
+                           "The config file couldn't be written, so "
+                           "tell me again after a restart. ")
+                          + "Say switch to local voice to go back.")
         elif verb == "noask":
             resp = ""
             _CONFIRM["verb"] = "noask"
@@ -1053,6 +1086,21 @@ async def amain():
         pass
     finally:
         _MIC["gen"] += 1     # abort any live open-mic capture promptly
+        # Wake the two blocking background reads (the PTT key and typed
+        # stdin) so their run_in_executor futures actually complete.
+        # ThreadPoolExecutor worker threads are deliberately NOT daemon
+        # threads (so in-flight work isn't silently dropped at exit),
+        # so without this, ptt.wait_press() and typed_q.get() -- which
+        # never return on their own once nothing is coming -- leave
+        # Python's own atexit hook (concurrent.futures.thread._python_
+        # exit) blocking the WHOLE process from exiting, even after
+        # "hung up" below has already logged. Confirmed live: a session
+        # held its full GPU allocation and the single-instance port
+        # lock for 3+ minutes after logging hung up, until force-killed
+        # (2026-09-01).
+        if "ptt" in locals():
+            ptt._press_evt.set()
+        typed_q.put("")
         if speak_task and not speak_task.done():
             speak_task.cancel()
         mouth.shutdown()  # restores the music on Ctrl-C / crash paths too

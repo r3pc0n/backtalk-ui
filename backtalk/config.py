@@ -162,6 +162,14 @@ DEFAULTS = {
     # mouth._get_elevenlabs_key for the seeding one-liners. Kokoro
     # remains the automatic fallback, so the voice degrades instead of
     # going mute if the cloud fails. Needs ffmpeg on the PATH.
+    # Which family of premium voice the console command controls:
+    # "cloud" (default) tries Cartesia then ElevenLabs; "local" tries
+    # CSM instead, skipping both cloud engines entirely. Kokoro is
+    # always the final fallback either way (see mouth.synth_stream).
+    # Never hand-edit this to switch: say "switch to local voice" or
+    # "switch to cloud voice" in a voice session (the switch saves
+    # itself here, same as mic_mode/permission_mode).
+    "voice_mode": "cloud",
     "elevenlabs": {
         "enabled": False,
         "voice_id": "",
@@ -182,6 +190,56 @@ DEFAULTS = {
                    "equalizer=f=140:t=q:w=1:g=1.5,"
                    "acompressor=threshold=-18dB:ratio=2.5:attack=8:"
                    "release=120:makeup=4dB,alimiter=limit=0.95"),
+    },
+    # Optional premium voice, alternative to ElevenLabs above: Cartesia
+    # (Sonic) on YOUR key. Same credential rule — never a file, read from
+    # the macOS Keychain (item `backtalk-cartesia`) or Linux secret-tool,
+    # CARTESIA_API_KEY env var as last-resort fallback — see
+    # mouth._get_cartesia_key. Kokoro remains the automatic fallback. If
+    # both this and elevenlabs are enabled at once, cartesia wins — see
+    # mouth.synth_stream. No ffmpeg step needed: Cartesia returns raw
+    # pcm_s16le directly in the sample rate we ask for.
+    "cartesia": {
+        "enabled": False,
+        "voice_id": "",
+        # Purely for you. Voice IDs are unreadable six months later, so put
+        # the human name here; nothing reads it.
+        "voice_note": "",
+        "model": "sonic-3.6",
+        # Which OS credential-store entry holds the key. Change it if you
+        # already keep a Cartesia key under a name of your own rather than
+        # seeding a second copy of the same secret.
+        "key_slot": "backtalk-cartesia",
+    },
+    # Optional local voice, alternative to Kokoro: CSM (sesame/csm-1b) via
+    # HuggingFace Transformers, in-process on your own GPU. No API key, no
+    # network per request — but it's a ~1B-parameter model, so it wants
+    # CUDA (slow on CPU) and needs `hf auth login` once to accept the
+    # gated model. Sits BELOW ElevenLabs/Cartesia and ABOVE Kokoro in
+    # mouth.synth_stream: tried only when neither cloud engine is
+    # enabled/ready, falls back to Kokoro on any load or generation
+    # failure. Loaded lazily on first use (not at warm()), so enabling
+    # this costs nothing until the first sentence actually needs it.
+    "csm": {
+        "enabled": False,
+        # Which of csm-1b's speaker identities to use.
+        "speaker": 0,
+        # Hard cap on one utterance's generated audio, converted to a
+        # token budget via the Mimi codec's 12.5Hz frame rate (80ms/token).
+        "max_audio_length_ms": 15000,
+        "temperature": 0.9,
+        "topk": 50,
+        # Optional voice anchor: a short audio file (any format ffmpeg/
+        # torchaudio reads) of the target voice speaking. Passed as the
+        # first turn of the generation conversation so every utterance is
+        # conditioned on it instead of a random voice each time. Loaded
+        # once and cached (mouth._ensure_csm) -- swapping the file needs a
+        # process restart. "" disables it.
+        "reference_audio": "",
+        # The reference_audio's transcript. Optional -- CSM tolerates an
+        # empty string, but pairing the audio with what it actually says
+        # anchors prosody more reliably than the bare clip alone.
+        "reference_text": "",
     },
     # Where the signal-bus files are written (.voice_state,
     # .voice_waveform, .voice_loading_pid) — anything can watch them;
