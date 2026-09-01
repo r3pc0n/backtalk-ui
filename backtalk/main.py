@@ -421,7 +421,7 @@ async def _apply_pending_switch(brain, mouth):
     key = _TIER_MODEL_KEY[tier]
     await brain.command(f"/model {CFG[key]}")
     mouth.say(_TIER_SAY[tier])
-    transcript_server.set_state(tier=tier)
+    transcript_server.set_state(tier=tier, model=CFG[key])
     log(f"[tier]   switched to {tier} ({CFG[key]})")
 
 
@@ -882,6 +882,7 @@ async def amain():
         # "" meaning the model's own inherited default.
         transcript_server.set_state(
             tier="fast",
+            model=brain.model,
             effort=boot_effort if boot_effort in _EFFORTS else "",
             auto_approve=_AUTOAPPROVE["on"])
 
@@ -919,18 +920,18 @@ async def amain():
                       "you're done.")
             resp = await brain.command(f"/model {CFG['deep_model']}")
             say_after = "Deep model online, for this session only."
-            state_update = {"tier": "deep"}
+            state_update = {"tier": "deep", "model": CFG["deep_model"]}
         elif verb == "cheap":
             mouth.say("Switching to the cheap model. Heads up, "
                       "reasoning gets shallower. Say back to the fast "
                       "model when you're done.")
             resp = await brain.command(f"/model {CFG['cheap_model']}")
             say_after = "Cheap model online, for this session only."
-            state_update = {"tier": "cheap"}
+            state_update = {"tier": "cheap", "model": CFG["cheap_model"]}
         elif verb == "fast":
             resp = await brain.command(f"/model {CFG['model']}")
             say_after = "Back on the fast model."
-            state_update = {"tier": "fast"}
+            state_update = {"tier": "fast", "model": CFG["model"]}
         elif verb.startswith("effort:"):
             lvl = verb.split(":", 1)[1]
             resp = await brain.command(f"/effort {lvl}")

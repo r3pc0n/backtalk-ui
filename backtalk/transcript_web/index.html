@@ -84,7 +84,7 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 10px 12px;
-    min-width: 220px;
+    min-width: 260px;
     box-shadow: 0 8px 24px rgba(0,0,0,0.4);
     z-index: 10;
   }
@@ -275,6 +275,16 @@
             <button class="model-btn" type="button" data-tier="fast" data-phrase="switch to the fast model">Fast</button>
             <button class="model-btn" type="button" data-tier="deep" data-phrase="switch to the deep model">Deep</button>
             <button class="model-btn" type="button" data-tier="cheap" data-phrase="switch to the cheap model">Cheap</button>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-label">Reasoning effort</div>
+          <div class="model-btns">
+            <button class="model-btn" type="button" data-effort="low" data-phrase="set effort to low">Low</button>
+            <button class="model-btn" type="button" data-effort="medium" data-phrase="set effort to medium">Med</button>
+            <button class="model-btn" type="button" data-effort="high" data-phrase="set effort to high">High</button>
+            <button class="model-btn" type="button" data-effort="xhigh" data-phrase="set effort to xhigh">XHi</button>
+            <button class="model-btn" type="button" data-effort="max" data-phrase="set effort to max">Max</button>
           </div>
         </div>
         <div class="settings-section">
@@ -478,12 +488,16 @@
     if (!state) return;
     var parts = [];
     if (state.tier) parts.push(TIER_LABEL[state.tier] || state.tier);
+    if (state.model) parts.push(state.model);
     if (state.effort) parts.push(state.effort);
     statusPill.textContent = parts.length ? parts.join(" · ") : "—";
 
     for (var i = 0; i < modelBtns.length; i++) {
-      modelBtns[i].classList.toggle(
-        "active", modelBtns[i].getAttribute("data-tier") === state.tier);
+      var btn = modelBtns[i];
+      var isActive = btn.hasAttribute("data-tier")
+        ? btn.getAttribute("data-tier") === state.tier
+        : btn.getAttribute("data-effort") === state.effort;
+      btn.classList.toggle("active", isActive);
     }
 
     // Don't fight a click in progress: only sync from server state
