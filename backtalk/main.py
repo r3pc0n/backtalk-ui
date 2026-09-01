@@ -27,9 +27,10 @@ spoken reply, and typing while it talks interrupts it.
 
 THE VOICE CONSOLE: exact phrases, spoken (or typed) alone, control the
 session itself so you never go back to the keyboard: "clear the
-session" / "compact the session" / "switch to the deep model" / "back
-to the fast model" / "set effort to low" (or medium, high, max) /
-"usage report" / "go hands free" and "push to talk mode" (the MIC) /
+session" / "compact the session" / "switch to the deep model" /
+"switch to the cheap model" / "back to the fast model" / "set effort
+to low" (or medium, high, max) / "usage report" / "go hands free" and
+"push to talk mode" (the MIC) /
 "stop asking for permission" and "start asking again" (permissions,
 called auto-approve, a different axis than the microphone on purpose) /
 "switch to local voice" and "switch to cloud voice" (voice_mode: which
@@ -308,6 +309,8 @@ CONSOLE_VERBS = {
                   "compact context", "slash compact"),
     "deep":      ("switch to the deep model", "use the deep model",
                   "slash model deep"),
+    "cheap":     ("switch to the cheap model", "use the cheap model",
+                  "switch to haiku", "use haiku", "slash model cheap"),
     "fast":      ("switch to the fast model", "use the fast model",
                   "back to the fast model", "slash model fast"),
     "usage":     ("usage report", "slash usage"),
@@ -759,6 +762,12 @@ async def amain():
                       "you're done.")
             resp = await brain.command(f"/model {CFG['deep_model']}")
             say_after = "Deep model online, for this session only."
+        elif verb == "cheap":
+            mouth.say("Switching to the cheap model. Heads up, "
+                      "reasoning gets shallower. Say back to the fast "
+                      "model when you're done.")
+            resp = await brain.command(f"/model {CFG['cheap_model']}")
+            say_after = "Cheap model online, for this session only."
         elif verb == "fast":
             resp = await brain.command(f"/model {CFG['model']}")
             say_after = "Back on the fast model."

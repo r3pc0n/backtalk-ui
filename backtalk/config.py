@@ -54,6 +54,14 @@ DEFAULTS = {
     # lasts one session and is always spoken; this default never moves
     # by itself.
     "deep_model": "claude-opus-5",
+    # The cheap/small-work model for the voice console's "switch to the
+    # cheap model" command ("back to the fast model" returns to "model"
+    # above, same as returning from deep_model). Full id ON PURPOSE,
+    # same reasoning as "model". Cheaper and faster than the fast tier
+    # for trivial turns, at the cost of noticeably shallower reasoning.
+    # The switch lasts one session and is always spoken; this default
+    # never moves by itself.
+    "cheap_model": "claude-haiku-4-5-20251001",
     # Tool permissions for the voice session. "ask" is the default ON
     # PURPOSE (safety is opt-out, never opt-in): when the agent wants a
     # gated tool (write a file, run a real command), it ASKS OUT LOUD
@@ -328,8 +336,9 @@ DISCIPLINE = (
     "asking for permission' (then 'confirm'), or 'start asking "
     "again'. Microphone: 'go hands free', or 'push to talk mode'. "
     "Also: 'clear the session', 'compact the session', 'switch to "
-    "the deep model', 'back to the fast model', 'set effort to low' "
-    "(or medium, high, max), and 'usage report'. You cannot flip "
+    "the deep model', 'switch to the cheap model', 'back to the fast "
+    "model', 'set effort to low' (or medium, high, max), and 'usage "
+    "report'. You cannot flip "
     "these live yourself, so when asked, give the person the exact "
     "phrase to SAY. Editing backtalk.json only changes the default "
     "for the NEXT launch."
