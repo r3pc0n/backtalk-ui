@@ -31,15 +31,46 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 HERE = Path(__file__).resolve().parent
 WEB_DIR = HERE / "backtalk" / "transcript_web"
 LAUNCH_SCRIPT = HERE.parent / "launch-talk.sh"
+LAUNCH_LOG = HERE / "logs" / "launcher-launch.log"
+VIEWER_STATE_FILE = HERE / "logs" / "viewer-state.json"
 
 PORT = 8793
 INSTANCE_PORT = 8791   # backtalk.main's own single-instance mutex
 POLL_S = 1.0
+
+# Tracks the most recent /start attempt so a launch that dies before
+# backtalk.main ever claims INSTANCE_PORT can be reported to the page
+# instead of leaving it stuck showing "Starting..." forever -- see
+# _watch_launch() below. Plain globals, not a class: this whole module
+# is a single always-on loop, not something that needs instances.
+_launch_proc = None      # the Popen for the current/last attempt, or None
+_launch_failed = False   # set once _watch_launch() sees it die unstarted
+
+
+def _record_viewer(source: str):
+    """Best-effort: remember the most recent idle-period poll's origin
+    (Television's webview vs. a plain browser) so start.sh can later
+    decide whether a viewer already exists, and where, instead of
+    always opening a new browser window. Only launcher.py ever writes
+    this file -- it's the only thing that sees every poll while idle;
+    by the time backtalk.main is actually up, the browser-opening
+    decision has already been made. Written on every matching poll
+    (last write wins), not just once, so the timestamp always reflects
+    how recently someone was actually looking, not just first contact.
+    Failure is silent by design -- a missing/stale file just means
+    start.sh falls back to its original, always-safe behavior."""
+    tmp = VIEWER_STATE_FILE.with_suffix(".tmp")
+    try:
+        VIEWER_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps({"source": source, "ts": time.time()}))
+        tmp.replace(VIEWER_STATE_FILE)
+    except OSError:
+        pass
 
 
 def _call_active() -> bool:
@@ -75,19 +106,33 @@ class _Handler(BaseHTTPRequestHandler):
         if parsed.path in ("/", "/index.html", "/transcript", "/transcript/"):
             self._serve_file(WEB_DIR / "index.html", "text/html")
         elif parsed.path == "/api/transcript":
-            self._send_json(200, {"idle": True})
+            source = parse_qs(parsed.query).get("source", [None])[0]
+            if source in ("television", "browser"):
+                _record_viewer(source)
+            body = {"idle": True}
+            if _launch_failed:
+                body["launch_failed"] = True
+            self._send_json(200, body)
         else:
             self.send_response(404)
             self.end_headers()
 
     def do_POST(self):
+        global _launch_proc, _launch_failed
         parsed = urlparse(self.path)
         if parsed.path == "/start":
             try:
-                subprocess.Popen(
+                LAUNCH_LOG.parent.mkdir(parents=True, exist_ok=True)
+                logf = open(LAUNCH_LOG, "a")
+                logf.write(
+                    f"\n--- launch attempt {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+                logf.flush()
+                _launch_failed = False
+                _launch_proc = subprocess.Popen(
                     [str(LAUNCH_SCRIPT)],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    stdout=logf, stderr=logf,
                     start_new_session=True)
+                logf.close()   # Popen already dup'd it; this is our copy
                 self._send_json(202, {"ok": True})
             except OSError as e:
                 self._send_json(500, {"error": str(e)})
@@ -123,12 +168,31 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+def _watch_launch(active: bool):
+    """Reconcile the tracked /start attempt against reality: clear it on
+    a real success, flag it once the whole launch-talk.sh -> start.sh ->
+    backtalk.main chain has visibly died without ever claiming
+    INSTANCE_PORT. `active` is this tick's _call_active() result, passed
+    in rather than recomputed."""
+    global _launch_proc, _launch_failed
+    if active:
+        _launch_proc = None
+        return
+    if _launch_proc is not None and _launch_proc.poll() is not None:
+        print(f"[launcher] launch attempt exited (code "
+              f"{_launch_proc.returncode}) without ever starting "
+              f"backtalk.main — see {LAUNCH_LOG}", flush=True)
+        _launch_failed = True
+        _launch_proc = None
+
+
 def main():
     server = None
     print("[launcher] watching for backtalk.main on port "
           f"{INSTANCE_PORT}...", flush=True)
     while True:
         active = _call_active()
+        _watch_launch(active)
         if active and server is not None:
             print("[launcher] call started — releasing the port so "
                   "backtalk's own transcript server can take it",
