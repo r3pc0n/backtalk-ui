@@ -24,7 +24,9 @@ The hearing and the built-in voice run local: free, offline models on your machi
 
 ### Already running the full Jarvis stack (fullstack-agent)?
 
-This swaps `backtalk-ui` in for stock backtalk, keeping your memory, face, and hands untouched, and keeping `fullstack-agent/update.sh`'s "update everything" working correctly. Hang up any active call first — do this with backtalk not running:
+This swaps `backtalk-ui` in for stock backtalk, keeping your memory, face, and hands untouched, and keeping `fullstack-agent/update.sh`'s "update everything" working correctly. Hang up any active call first — do this with backtalk not running.
+
+**Check for local hand-patches first.** Only `backtalk.json` gets carried over below — if you (or an agent working for you) ever modified backtalk's own `.py` files directly, that's not tracked by config and won't survive the swap. `cd` into your existing `backtalk` folder and run `git status` and `git diff` before moving anything — if it shows real changes to tracked files, read what they do and decide whether you need to reapply the equivalent in `backtalk-ui` (a Wayland push-to-talk workaround is a real example this fork has actually turned up on a real machine — it may not even be needed here, since this fork's PTT already supports native Wayland directly, but you won't know unless you look first).
 
 ```
 mv backtalk backtalk.old              # from your agent's home folder
@@ -44,6 +46,22 @@ Should show only `origin` → `backtalk-ui`. **Don't add an `upstream` remote po
 Once you've confirmed it works, `rm -rf backtalk.old`.
 
 *(Why swap the whole folder instead of `git merge`-ing this in as a patch? This fork shares real git history with stock backtalk, so a merge is technically possible — but only cleanly if your install hasn't drifted from where this fork branched off, which gets less likely the longer you've had it and the more times you've updated. A conflicted merge is a bad time if you're not used to resolving git conflicts by hand. The swap above works identically no matter your install's history, so that's the one path documented here.)*
+
+#### Prefer to have your agent do it?
+
+If you're already talking to Claude, Jarvis, or any other capable coding agent, handing it the swap is genuinely a good option — it can read this README itself, check your specific install for anything custom, and tell you honestly if something doesn't carry over cleanly, rather than you following steps blind. This exact prompt (used almost word for word to validate the instructions above on a real machine) works well:
+
+> I have an existing Jarvis-style agent stack on this machine (fullstack-agent: memory, voice, face, hands), running mostly stock — including backtalk, its voice component. I want to swap in a fork called backtalk-ui, following that repo's own README.
+>
+> Repo: https://github.com/r3pc0n/backtalk-ui
+>
+> 1. Read the whole README first, especially the "Already running the full Jarvis stack" section under Install — don't guess at the steps.
+> 2. Before touching anything, check my *existing* backtalk folder for local modifications: run `git status` and `git diff` there. `backtalk.json` isn't tracked by git and doesn't matter for this check — I care about changes to the tracked `.py` files. If you find real ones, tell me exactly what they do before proceeding, since the swap only carries `backtalk.json` over, not modified code.
+> 3. Follow the documented swap steps exactly — move my old folder aside (don't delete it), clone backtalk-ui in its place, copy my config over, install.
+> 4. Verify the git remote is set up correctly per the README's own check.
+> 5. Actually test it: start a call, confirm my existing voice engine and keys came through correctly, try switching between local and cloud voice, glance at the theme picker in the transcript settings panel.
+> 6. Give me an honest report — what worked exactly as documented, what needed guessing, and specifically call out anything from my old install that didn't carry over cleanly.
+> 7. Leave my old backtalk folder in place. Don't delete it without asking me first.
 
 ### Starting fresh (no existing backtalk install)
 
@@ -73,7 +91,7 @@ Setup runs through the wizard instead of the shell scripts (`install.sh` and `ru
 
 **Zero-config default: Kokoro.** Local, offline, no accounts, no per-word costs, and honestly a bit computer-sounding. The default voice is `bm_lewis`, a British male with exactly the butler register. Around 60 voices ship free; set `"voice"` in `backtalk.json` (the first letter picks the language: `a` is American, `b` is British, and there are Spanish, French, Hindi, Italian, Japanese, Portuguese, and Chinese voices too). This works the moment you clone the repo — nothing to set up.
 
-**Local vs. Cloud, an explicit pick, not a silent chain.** Say "switch to local voice" or "switch to cloud voice" (or use the Engine buttons in the transcript page). Whichever you're not on stays fully configured and ready — switching is instant, no restart.
+**Local vs. Cloud, an explicit pick, not a silent chain.** Say "switch to local voice" or "switch to cloud voice" (or use the Engine buttons in the transcript page). Whichever you're not on stays fully configured and ready — switching is instant, no restart. `"voice_mode"` in `backtalk.json` defaults to `"cloud"` — worth knowing if you go looking at your config, since it can look surprising next to "Kokoro just works with nothing set up": on a fresh install, cloud has nothing configured either, so it fails over to Kokoro same as local would. You end up hearing the same thing either way; the config value is just not what you might guess from that.
 
 - **Local**: Kokoro by default. Optionally upgrade to **Pocket TTS** ([kyutai-labs/pocket-tts](https://github.com/kyutai-labs/pocket-tts)) for a cloned voice instead of a preset — CPU-only, free, no GPU needed, but it's a separate install (its own venv, kept isolated from backtalk's own dependencies on purpose — see `mouth.py`'s `_ensure_pocket` for why). Set it up yourself:
   1. `pip install pocket-tts --extra-index-url https://download.pytorch.org/whl/cpu` into its own venv at `../pocket-tts/.venv` (a sibling folder to this repo).
