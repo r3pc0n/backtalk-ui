@@ -307,13 +307,16 @@ DEFAULTS = {
     # terminal (it goes into the same queue).
     "transcript_ui": {
         "enabled": True,
-        # Next free port after ai-visualizer (8790) and vault-graph
-        # (8792); 8791 is backtalk's own single-instance mutex.
+        # 8791 is backtalk's own single-instance mutex; this just needs
+        # to not collide with that or anything else on the machine.
         "port": 8793,
-        # Open a browser tab automatically at launch. Off by default:
-        # this is meant to be a tab you open once and leave, like the
-        # other two, not a window that pops up every session.
-        "open_browser": False,
+        # Open a browser tab automatically at launch. On by default in
+        # this fork specifically: a first-time user has no way to know
+        # this page exists otherwise, and discoverability matters more
+        # here than avoiding an extra tab on repeat sessions. Set to
+        # false if you'd rather open http://127.0.0.1:8793/ yourself
+        # and leave the tab open across sessions instead.
+        "open_browser": True,
     },
     # Sound played while the agent thinks, so a long pause never reads as
     # a dead line. The bundled one ships in assets/; a relative path
