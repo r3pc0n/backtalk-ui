@@ -170,16 +170,17 @@ DEFAULTS = {
     # mouth._get_elevenlabs_key for the seeding one-liners. Kokoro
     # remains the automatic fallback, so the voice degrades instead of
     # going mute if the cloud fails. Needs ffmpeg on the PATH.
-    # Which TTS engine speaks, an explicit three-way pick, no crossover
-    # between them: "cartesia" (default) tries Cartesia then ElevenLabs;
-    # "pocket" tries Pocket TTS only; "chatterbox" tries Chatterbox
-    # only. Kokoro is always the silent last-resort fallback if the
-    # selected engine fails or is disabled (see mouth.synth_stream).
-    # Never hand-edit this to switch: say "switch to cartesia voice",
-    # "switch to pocket voice", or "switch to chatterbox voice" in a
-    # voice session (the switch saves itself here, same as
+    # Which TTS engine speaks, an explicit pick, no crossover between
+    # them: "cloud" (default) tries Cartesia then ElevenLabs, whichever
+    # you've set up (see the README) — Cartesia wins if both are
+    # enabled; "local" tries Pocket TTS if you've set it up, otherwise
+    # falls through to Kokoro, which works with zero setup. Kokoro is
+    # always the silent last-resort fallback if the selected engine
+    # fails or is disabled (see mouth.synth_stream). Never hand-edit
+    # this to switch: say "switch to cloud voice" or "switch to local
+    # voice" in a voice session (the switch saves itself here, same as
     # mic_mode/permission_mode).
-    "voice_mode": "cartesia",
+    "voice_mode": "cloud",
     # Output gain, as a percent, applied to every engine's audio right
     # before it reaches the speaker (see mouth.Mouth._play_stream) --
     # 100 is unchanged/passthrough. Above 100 boosts (clipped so it
@@ -229,14 +230,14 @@ DEFAULTS = {
         # seeding a second copy of the same secret.
         "key_slot": "backtalk-cartesia",
     },
-    # Optional local voice, selected via voice_mode="pocket": Pocket TTS
+    # Optional local voice, selected via voice_mode="local": Pocket TTS
     # (kyutai-labs/pocket-tts), CPU-only, no GPU contention. Runs as its
     # own local HTTP server in its OWN venv (mouth._ensure_pocket
     # starts/stops it) rather than as a dependency of this one — its
     # CPU-only torch would otherwise fight backtalk's GPU-torch venv the
     # same way an in-process install once did (see backtalk.md's
-    # setuptools incident). Falls back to Kokoro on any failure, no
-    # crossover to chatterbox — mouth.synth_stream.
+    # setuptools incident). Falls back to Kokoro on any failure —
+    # mouth.synth_stream.
     "pocket": {
         "enabled": False,
         # Base URL of a `pocket-tts serve` instance. mouth._ensure_pocket
@@ -256,70 +257,38 @@ DEFAULTS = {
         # ~1.4s once cached this way. "" and no existing
         # voices/<voice>.safetensors means enabling this will fail loudly.
         "reference_audio": "",
-        "voice": "samantha",
+        # Which character speaks — a key into "voices" below (see its
+        # own comment). Resolves against voices/<this>.safetensors,
+        # exported from reference_audio above the first time it's
+        # needed. "default" here is just a name, not a real preset —
+        # there's nothing to clone until you set reference_audio.
+        "voice": "default",
         # Localhost-only static file server backtalk itself starts on
         # first use, just to hand pocket-tts's voice_url a fetchable
         # URL for the exported .safetensors — see mouth._ensure_pocket.
         "file_port": 8126,
     },
-    # Optional local voice, selected via voice_mode="chatterbox": the
-    # full Chatterbox model (Resemble AI), its own isolated venv at
-    # ~/my-agent/chatterbox-tts, run as its own local HTTP server
-    # (mouth._ensure_chatterbox starts/stops it) — same arm's-length
-    # pattern as pocket above, for the same reason: Chatterbox pins
-    # torch==2.6.0, this venv runs a different torch, and importing it
-    # directly here risks the exact transitive dependency regression
-    # that already happened once (see backtalk.md's setuptools
-    # incident). Falls back to Kokoro on any failure, no crossover to
-    # pocket — mouth.synth_stream. Replaces CSM as of 2026-09-03
-    # (retired outright, not left parked) — see the vault's Chatterbox
-    # TTS Engine note for the full build history.
+    # Custom characters, config-driven -- empty by default, add your
+    # own here rather than editing code (see the README for the full
+    # walkthrough). Each entry: {"<name>": {"cartesia_voice_id": "...",
+    # "label": "..."}}, both keys optional. "switch voice to <name>" in
+    # a voice session only works for names listed here.
     #
-    # Swapped from Chatterbox-Turbo to the full model, same day: a live
-    # head-to-head measured the VRAM cost as basically identical
-    # (~3.3GB vs ~3.4GB), and the full model exposes exaggeration/
-    # cfg_weight for tuning, which Turbo silently ignores. Costs ~1.9x
-    # generate() latency (measured 2.49s vs 1.32s for a ~7s utterance).
-    "chatterbox": {
-        "enabled": False,
-        # Base URL of a chatterbox_server.py instance. mouth
-        # ._ensure_chatterbox starts one at this address if nothing's
-        # already listening there.
-        "url": "http://localhost:8130/",
-        # Path to the chatterbox venv's python and the server script.
-        # "" -> looks next to this repo, at
-        # ../chatterbox-tts/.venv/bin/python and
-        # ../chatterbox-tts/chatterbox_server.py.
-        "python": "",
-        "server_script": "",
-        # Voice cloning source for the DEFAULT character: a short
-        # reference clip (any format ffmpeg/librosa reads, 5s+). Loaded
-        # eagerly at server startup and cached (prepare_conditionals) —
-        # NOT re-embedded per sentence, unlike a naive per-request
-        # upload would be (measured ~4s extra per sentence without this;
-        # see the vault note). "" means enabling this will fail loudly.
-        "reference_audio": "",
-        # Which character speaks — resolved fresh on every call (same
-        # pattern as pocket.voice) against a sibling
-        # "<name>-reference.wav" next to reference_audio above. The
-        # server computes and caches that character's conditioning on
-        # first use (~0.4s), then reuses it — see chatterbox_server.py's
-        # _conds_for. Falls back to the default character server-side
-        # if a name has no reference clip yet, not an error.
-        "voice": "samantha",
-        # Emotional intensity, baked into voice conditioning at server
-        # startup. _ensure_chatterbox only launches a new server when
-        # none is already answering healthy on chatterbox.url — editing
-        # this value does NOT retune an already-running server; kill
-        # the chatterbox_server.py process (or restart backtalk) so the
-        # next call relaunches it with the new value. 0.5 is the
-        # library's own default.
-        "exaggeration": 0.5,
-        # Classifier-free guidance weight, applied per generate() call.
-        # Also baked in at server launch for simplicity (see
-        # chatterbox_server.py) — same restart caveat as exaggeration.
-        "cfg_weight": 0.5,
-    },
+    # - cartesia_voice_id: a voice you've cloned on Cartesia (see
+    #   https://play.cartesia.ai) — resolved into CFG["cartesia"]
+    #   ["voice_id"] on switch (main.py's "voice:" verb).
+    # - label: display name for spoken confirmations and the
+    #   transcript UI. Defaults to name.capitalize() if omitted.
+    #
+    # Pocket TTS needs no entry here at all — it clones whichever name
+    # you set pocket.voice to above, straight from a
+    # voices/<name>.safetensors file (exported once from
+    # pocket.reference_audio the first time it's needed). A single
+    # name can work on both engines at once: give it a
+    # voices/<name>.safetensors file AND a "voices" entry with a
+    # cartesia_voice_id, and switching characters moves both engines
+    # together, whichever one is actually live.
+    "voices": {},
     # Where the signal-bus files are written (.voice_state,
     # .voice_waveform, .voice_loading_pid) — anything can watch them;
     # visualizers pair with this contract. Default: the repo root.

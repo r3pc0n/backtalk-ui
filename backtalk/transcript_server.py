@@ -91,7 +91,7 @@ def set_state(**kwargs):
 
 
 def add_event(speaker: str, text: str):
-    """Append one transcript line. speaker: 'you' or 'samantha'. Never
+    """Append one transcript line. speaker: 'you' or 'assistant'. Never
     raises — a broken transcript feed must never take the voice down,
     the same rule vlog.log and the signal bus follow."""
     global _next_id

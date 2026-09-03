@@ -5,23 +5,29 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>backtalk — transcript</title>
 <style>
+  /* Default theme: Solitude -- the most neutral of the 30 bundled
+     presets (see THEMES below), picked deliberately for a stranger's
+     first impression rather than any personal favorite. Overridden
+     instantly by the inline script right after this block if a saved
+     pick exists in localStorage, and changeable any time from the
+     settings panel's Theme picker. */
   :root {
-    --page-plane:     #0d0d0d;
-    --surface-1:      #1a1a19;
-    --surface-2:      #232322;
-    --text-primary:   #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted:     #898781;
-    --border:         rgba(255,255,255,0.10);
+    --page-plane:     #101315;
+    --surface-1:      #101315;
+    --surface-2:      #4b4e55;
+    --text-primary:   #cacccc;
+    --text-secondary: #cacccc;
+    --text-muted:     #4b4e55;
+    --border:         rgb(255 255 255 / 10%);
 
-    --you-accent:      #c3c2b7;
-    --you-row-bg:      rgba(255,255,255,0.03);
-    --samantha-accent: #3987e5;
-    --samantha-text:   #7fb4f2;
-    --samantha-row-bg: rgba(57,135,229,0.05);
+    --you-accent:      #cacccc;
+    --you-row-bg:      rgb(255 255 255 / 3%);
+    --assistant-accent: #798186;
+    --assistant-text:   #798186;
+    --assistant-row-bg: rgb(121 129 134 / 5%);
 
-    --ok:   #199e70;
-    --bad:  #e66767;
+    --ok:   #9fa5a9;
+    --bad:  #565d60;
 
     --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
     --font-mono: ui-monospace, "Cascadia Mono", "DejaVu Sans Mono", monospace;
@@ -40,7 +46,12 @@
   header {
     flex: 0 0 auto;
     display: flex; align-items: center; gap: 10px;
-    padding: 12px 18px;
+    /* Extra right padding vs. the left side, deliberately -- gives the
+       .tiny-toggles corner cluster (see below) breathing room instead
+       of crowding the hamburger icon and the settings panel, which is
+       positioned relative to this same header content and shifts left
+       along with it. */
+    padding: 12px 34px 12px 18px;
     border-bottom: 1px solid var(--border);
     background: var(--surface-1);
   }
@@ -93,7 +104,7 @@
   .idle-msg { color: var(--text-muted); font-size: 14px; }
   .idle-error { color: var(--bad); font-size: 13px; max-width: 360px; text-align: center; }
   .start-btn {
-    background: var(--samantha-accent);
+    background: var(--assistant-accent);
     color: #ffffff;
     border: none;
     border-radius: 8px;
@@ -145,9 +156,18 @@
     position: absolute; top: 1px; left: 1px;
     width: 14px; height: 14px; border-radius: 50%;
     background: var(--text-muted);
+    /* Depth via shadow, not color contrast -- --text-muted and
+       --surface-2 (the track) are the SAME value in every one of the
+       29 bundled themes (confirmed: it's how the theme generator maps
+       Omarchy palettes, not one theme's quirk), so a knob relying on
+       fill-color contrast against the track disappears in all of
+       them when off. A dark drop-shadow plus a faint light rim covers
+       both light and dark themes -- whichever layer contrasts with
+       what's actually behind it is the one that reads. */
+    box-shadow: 0 1px 3px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.15);
     transition: transform 150ms ease, background 150ms ease;
   }
-  .toggle input:checked + .toggle-track { background: var(--samantha-accent); border-color: var(--samantha-accent); }
+  .toggle input:checked + .toggle-track { background: var(--assistant-accent); border-color: var(--assistant-accent); }
   .toggle input:checked + .toggle-track .toggle-knob { transform: translateX(14px); background: #fff; }
 
   .settings-section { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
@@ -159,7 +179,18 @@
   .model-btns { display: flex; gap: 6px; }
   .voice-btns { flex-wrap: wrap; }
   .volume-row { display: flex; align-items: center; gap: 10px; }
-  .volume-row input[type="range"] { flex: 1 1 auto; accent-color: var(--samantha-accent); }
+  .theme-select {
+    width: 100%;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 12px;
+    padding: 6px 8px;
+    cursor: pointer;
+  }
+  .volume-row input[type="range"] { flex: 1 1 auto; accent-color: var(--assistant-accent); }
   .volume-value { flex: 0 0 auto; min-width: 3.2em; text-align: right; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
   .model-btn {
     flex: 1 1 0;
@@ -173,12 +204,12 @@
     cursor: pointer;
     transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
   }
-  .model-btn:hover { color: var(--text-primary); border-color: var(--samantha-accent); }
+  .model-btn:hover { color: var(--text-primary); border-color: var(--assistant-accent); }
   .model-btn.sent { color: var(--ok); border-color: var(--ok); }
   .model-btn.active {
-    color: var(--samantha-accent);
-    border-color: var(--samantha-accent);
-    background: var(--samantha-row-bg);
+    color: var(--assistant-accent);
+    border-color: var(--assistant-accent);
+    background: var(--assistant-row-bg);
   }
 
   #log {
@@ -195,9 +226,9 @@
   #log.align-you-right .row.you .text { text-align: right; }
 
   /* Log-line rows, not chat bubbles: always left-aligned, full width,
-     a tag like the real backtalk.log lines ("[you]", "[sam]" -- shown
+     a tag like the real backtalk.log lines ("[you]", "[ai]" -- shown
      short here even though the underlying speaker id stays
-     "samantha"), segregated by a left border + faint background tint
+     "assistant"), segregated by a left border + faint background tint
      per speaker instead of by which side of the screen the row sits
      on. */
   .row {
@@ -211,9 +242,9 @@
     border-left-color: var(--you-accent);
     background: var(--you-row-bg);
   }
-  .row.samantha {
-    border-left-color: var(--samantha-accent);
-    background: var(--samantha-row-bg);
+  .row.assistant {
+    border-left-color: var(--assistant-accent);
+    background: var(--assistant-row-bg);
   }
   .tag {
     flex: 0 0 auto;
@@ -223,7 +254,7 @@
     padding-top: 1px;
   }
   .row.you .tag { color: var(--text-secondary); }
-  .row.samantha .tag { color: var(--samantha-accent); }
+  .row.assistant .tag { color: var(--assistant-accent); }
   .text {
     flex: 1 1 auto;
     font-family: var(--font-mono);
@@ -233,7 +264,7 @@
     word-wrap: break-word;
     color: var(--text-primary);
   }
-  .row.samantha .text { color: var(--samantha-text); }
+  .row.assistant .text { color: var(--assistant-text); }
   .text a {
     color: inherit;
     text-decoration: underline;
@@ -287,10 +318,10 @@
     resize: none;
     outline: none;
   }
-  #input:focus { border-color: var(--samantha-accent); }
+  #input:focus { border-color: var(--assistant-accent); }
   #send {
     flex: 0 0 auto;
-    background: var(--samantha-accent);
+    background: var(--assistant-accent);
     color: #ffffff;
     border: none;
     border-radius: 6px;
@@ -313,8 +344,15 @@
      anyway, without needing to raise the resting opacity further. */
   .tiny-toggles {
     position: fixed;
-    top: 56px; right: 8px;
-    display: flex; gap: 6px;
+    /* Top-right corner, stacked vertically -- tried sitting them at
+       header height next to the hamburger first, but that put them
+       right on top of the hangup button's spot (only visible during a
+       live call, so it wouldn't have shown up until real use). The
+       corner is clear of the header icons AND the settings panel
+       (which opens below the header, not into this space) in every
+       state, including chrome-hidden below. */
+    top: 8px; right: 2px;
+    display: flex; flex-direction: column; gap: 6px;
     padding: 3px 4px;
     border-radius: 999px;
     background: rgba(0,0,0,0.35);
@@ -322,7 +360,7 @@
     opacity: 0.35;
     transition: opacity 150ms ease, top 150ms ease;
   }
-  body.chrome-hidden .tiny-toggles { top: 6px; }
+  body.chrome-hidden .tiny-toggles { top: 8px; }
   .tiny-toggles:hover { opacity: 0.9; }
   .tiny-toggle-btn {
     width: 10px; height: 10px;
@@ -332,7 +370,7 @@
     cursor: pointer;
     padding: 0;
   }
-  .tiny-toggle-btn.active { background: var(--samantha-accent); }
+  .tiny-toggle-btn.active { background: var(--assistant-accent); }
 
   body.chrome-hidden header,
   body.chrome-hidden footer { display: none; }
@@ -349,54 +387,39 @@
   }
 </style>
 <script>
-/* Omarchy theme bridge — fetches this page's generated CSS
-   (~/workstation/backtalk-transcript-theme/) directly from the local
-   bridge server, instead of relying on the browser extension's
-   chrome.scripting injection. Extensions don't reach every renderer
-   (Television's Electron webview, in particular) — a page-level fetch
-   does, since it's just an ordinary same-machine HTTP request. Same
-   snippet as ai-visualizer/faces/radial/index.html; see that file's
-   comment for the full token-exposure rationale (confirmed acceptable
-   by Des, 2026-09-01, for this same-user, localhost-only, read-only
-   setup). Colors only — the layout, right-align toggle, settings menu,
-   and everything else built today is untouched; only the :root custom
-   property VALUES change underneath it. */
+/* Theme presets -- 29 palettes bundled statically (see backtalk.md's
+   generation history for the mapping). No live sync: unlike a personal
+   Omarchy setup, there's no portable way for a stranger's browser to
+   read their actual desktop theme, so this is a manual picker only,
+   persisted per-browser in localStorage. Applied here, before <body>
+   renders, so a saved pick never flashes the Solitude default first. */
+var THEMES = {"atelier":{"--bad":"#ba6236","--border":"rgb(255 255 255 / 10%)","--ok":"#7d9726","--om-color-scheme":"dark","--page-plane":"#22221b","--assistant-accent":"#36a166","--assistant-row-bg":"rgb(54 161 102 / 5%)","--assistant-text":"#36a166","--surface-1":"#22221b","--surface-2":"#6c6b5a","--text-muted":"#6c6b5a","--text-primary":"#dcd9d6","--text-secondary":"#dcd9d6","--you-accent":"#dcd9d6","--you-row-bg":"rgb(255 255 255 / 3%)"},"batou":{"--bad":"#e19e74","--border":"rgb(255 255 255 / 10%)","--ok":"#a5a297","--om-color-scheme":"dark","--page-plane":"#121212","--assistant-accent":"#605d5b","--assistant-row-bg":"rgb(96 93 91 / 5%)","--assistant-text":"#605d5b","--surface-1":"#121212","--surface-2":"#383735","--text-muted":"#383735","--text-primary":"#a4a4a4","--text-secondary":"#a4a4a4","--you-accent":"#a4a4a4","--you-row-bg":"rgb(255 255 255 / 3%)"},"bauhaus":{"--bad":"#cb886d","--border":"rgb(255 255 255 / 10%)","--ok":"#789fa2","--om-color-scheme":"dark","--page-plane":"#101318","--assistant-accent":"#8999aa","--assistant-row-bg":"rgb(137 153 170 / 5%)","--assistant-text":"#8999aa","--surface-1":"#161b22","--surface-2":"#3a3f4c","--text-muted":"#3a3f4c","--text-primary":"#eaeff5","--text-secondary":"#eaeff5","--you-accent":"#eaeff5","--you-row-bg":"rgb(255 255 255 / 3%)"},"catppuccin-latte":{"--bad":"#d20f39","--border":"rgb(0 0 0 / 10%)","--ok":"#40a02b","--om-color-scheme":"light","--page-plane":"#eff1f5","--assistant-accent":"#1e66f5","--assistant-row-bg":"rgb(30 102 245 / 5%)","--assistant-text":"#1e66f5","--surface-1":"#eff1f5","--surface-2":"#acb0be","--text-muted":"#acb0be","--text-primary":"#4c4f69","--text-secondary":"#4c4f69","--you-accent":"#4c4f69","--you-row-bg":"rgb(0 0 0 / 3%)"},"catppuccin":{"--bad":"#f38ba8","--border":"rgb(255 255 255 / 10%)","--ok":"#a6e3a1","--om-color-scheme":"dark","--page-plane":"#1e1e2e","--assistant-accent":"#89b4fa","--assistant-row-bg":"rgb(137 180 250 / 5%)","--assistant-text":"#89b4fa","--surface-1":"#1e1e2e","--surface-2":"#585b70","--text-muted":"#585b70","--text-primary":"#cdd6f4","--text-secondary":"#cdd6f4","--you-accent":"#cdd6f4","--you-row-bg":"rgb(255 255 255 / 3%)"},"ethereal":{"--bad":"#ed5b5a","--border":"rgb(255 255 255 / 10%)","--ok":"#92a593","--om-color-scheme":"dark","--page-plane":"#060b1e","--assistant-accent":"#7d82d9","--assistant-row-bg":"rgb(125 130 217 / 5%)","--assistant-text":"#7d82d9","--surface-1":"#060b1e","--surface-2":"#6d7db6","--text-muted":"#6d7db6","--text-primary":"#ffcead","--text-secondary":"#ffcead","--you-accent":"#ffcead","--you-row-bg":"rgb(255 255 255 / 3%)"},"everforest":{"--bad":"#e67e80","--border":"rgb(255 255 255 / 10%)","--ok":"#a7c080","--om-color-scheme":"dark","--page-plane":"#2d353b","--assistant-accent":"#7fbbb3","--assistant-row-bg":"rgb(127 187 179 / 5%)","--assistant-text":"#7fbbb3","--surface-1":"#2d353b","--surface-2":"#475258","--text-muted":"#475258","--text-primary":"#d3c6aa","--text-secondary":"#d3c6aa","--you-accent":"#d3c6aa","--you-row-bg":"rgb(255 255 255 / 3%)"},"flexoki-light":{"--bad":"#d14d41","--border":"rgb(0 0 0 / 10%)","--ok":"#879a39","--om-color-scheme":"light","--page-plane":"#fffcf0","--assistant-accent":"#205ea6","--assistant-row-bg":"rgb(32 94 166 / 5%)","--assistant-text":"#205ea6","--surface-1":"#fffcf0","--surface-2":"#b7b5ac","--text-muted":"#b7b5ac","--text-primary":"#100f0f","--text-secondary":"#100f0f","--you-accent":"#100f0f","--you-row-bg":"rgb(0 0 0 / 3%)"},"greek-noir":{"--bad":"#aeab94","--border":"rgb(255 255 255 / 10%)","--ok":"#f25623","--om-color-scheme":"dark","--page-plane":"#171717","--assistant-accent":"#f25623","--assistant-row-bg":"rgb(242 86 35 / 5%)","--assistant-text":"#f25623","--surface-1":"#171717","--surface-2":"#525252","--text-muted":"#525252","--text-primary":"#ccd0cf","--text-secondary":"#ccd0cf","--you-accent":"#ccd0cf","--you-row-bg":"rgb(255 255 255 / 3%)"},"gruvbox-material":{"--bad":"#ea6962","--border":"rgb(255 255 255 / 10%)","--ok":"#a9b665","--om-color-scheme":"dark","--page-plane":"#282828","--assistant-accent":"#e78a4e","--assistant-row-bg":"rgb(231 138 78 / 5%)","--assistant-text":"#e78a4e","--surface-1":"#282828","--surface-2":"#928374","--text-muted":"#928374","--text-primary":"#d4be98","--text-secondary":"#d4be98","--you-accent":"#d4be98","--you-row-bg":"rgb(255 255 255 / 3%)"},"gruvbox":{"--bad":"#ea6962","--border":"rgb(255 255 255 / 10%)","--ok":"#a9b665","--om-color-scheme":"dark","--page-plane":"#282828","--assistant-accent":"#7daea3","--assistant-row-bg":"rgb(125 174 163 / 5%)","--assistant-text":"#7daea3","--surface-1":"#282828","--surface-2":"#665c54","--text-muted":"#665c54","--text-primary":"#d4be98","--text-secondary":"#d4be98","--you-accent":"#d4be98","--you-row-bg":"rgb(255 255 255 / 3%)"},"hackerman":{"--bad":"#50f872","--border":"rgb(255 255 255 / 10%)","--ok":"#4fe88f","--om-color-scheme":"dark","--page-plane":"#0b0c16","--assistant-accent":"#82fb9c","--assistant-row-bg":"rgb(130 251 156 / 5%)","--assistant-text":"#82fb9c","--surface-1":"#0b0c16","--surface-2":"#2d3450","--text-muted":"#2d3450","--text-primary":"#ddf7ff","--text-secondary":"#ddf7ff","--you-accent":"#ddf7ff","--you-row-bg":"rgb(255 255 255 / 3%)"},"kanagawa":{"--bad":"#c34043","--border":"rgb(255 255 255 / 10%)","--ok":"#76946a","--om-color-scheme":"dark","--page-plane":"#1f1f28","--assistant-accent":"#dcd7ba","--assistant-row-bg":"rgb(220 215 186 / 5%)","--assistant-text":"#dcd7ba","--surface-1":"#1f1f28","--surface-2":"#54546d","--text-muted":"#54546d","--text-primary":"#dcd7ba","--text-secondary":"#dcd7ba","--you-accent":"#dcd7ba","--you-row-bg":"rgb(255 255 255 / 3%)"},"last-horizon":{"--bad":"#c38b7b","--border":"rgb(255 255 255 / 10%)","--ok":"#87a9b0","--om-color-scheme":"dark","--page-plane":"#0c0b0c","--assistant-accent":"#b59790","--assistant-row-bg":"rgb(181 151 144 / 5%)","--assistant-text":"#b59790","--surface-1":"#0c0b0c","--surface-2":"#584e51","--text-muted":"#584e51","--text-primary":"#fafcfb","--text-secondary":"#fafcfb","--you-accent":"#fafcfb","--you-row-bg":"rgb(255 255 255 / 3%)"},"lumon":{"--bad":"#4d86b0","--border":"rgb(255 255 255 / 10%)","--ok":"#5e95bc","--om-color-scheme":"dark","--page-plane":"#16242d","--assistant-accent":"#8bc9eb","--assistant-row-bg":"rgb(139 201 235 / 5%)","--assistant-text":"#8bc9eb","--surface-1":"#16242d","--surface-2":"#304860","--text-muted":"#304860","--text-primary":"#d6e2ee","--text-secondary":"#d6e2ee","--you-accent":"#d6e2ee","--you-row-bg":"rgb(255 255 255 / 3%)"},"lupine":{"--bad":"#c900c4","--border":"rgb(0 0 0 / 10%)","--ok":"#4a2fd0","--om-color-scheme":"light","--page-plane":"#fafafa","--assistant-accent":"#3264eb","--assistant-row-bg":"rgb(50 100 235 / 5%)","--assistant-text":"#3264eb","--surface-1":"#fafafa","--surface-2":"#9e9e9e","--text-muted":"#9e9e9e","--text-primary":"#212121","--text-secondary":"#212121","--you-accent":"#212121","--you-row-bg":"rgb(0 0 0 / 3%)"},"matrix":{"--bad":"#a83a3a","--border":"rgb(255 255 255 / 10%)","--ok":"#2d9a48","--om-color-scheme":"dark","--page-plane":"#080c09","--assistant-accent":"#3cbf5c","--assistant-row-bg":"rgb(60 191 92 / 5%)","--assistant-text":"#3cbf5c","--surface-1":"#080c09","--surface-2":"#3a6840","--text-muted":"#3a6840","--text-primary":"#8bc98c","--text-secondary":"#8bc98c","--you-accent":"#8bc98c","--you-row-bg":"rgb(255 255 255 / 3%)"},"matte-black":{"--bad":"#d35f5f","--border":"rgb(255 255 255 / 10%)","--ok":"#ffc107","--om-color-scheme":"dark","--page-plane":"#121212","--assistant-accent":"#e68e0d","--assistant-row-bg":"rgb(230 142 13 / 5%)","--assistant-text":"#e68e0d","--surface-1":"#121212","--surface-2":"#333333","--text-muted":"#333333","--text-primary":"#bebebe","--text-secondary":"#bebebe","--you-accent":"#bebebe","--you-row-bg":"rgb(255 255 255 / 3%)"},"mechanoonna":{"--bad":"#c5564a","--border":"rgb(255 255 255 / 10%)","--ok":"#a89984","--om-color-scheme":"dark","--page-plane":"#1c1b19","--assistant-accent":"#d4bd99","--assistant-row-bg":"rgb(212 189 153 / 5%)","--assistant-text":"#d4bd99","--surface-1":"#1c1b19","--surface-2":"#6b655c","--text-muted":"#6b655c","--text-primary":"#f0e4c5","--text-secondary":"#f0e4c5","--you-accent":"#f0e4c5","--you-row-bg":"rgb(255 255 255 / 3%)"},"miasma":{"--bad":"#685742","--border":"rgb(255 255 255 / 10%)","--ok":"#5f875f","--om-color-scheme":"dark","--page-plane":"#222222","--assistant-accent":"#78824b","--assistant-row-bg":"rgb(120 130 75 / 5%)","--assistant-text":"#78824b","--surface-1":"#222222","--surface-2":"#666666","--text-muted":"#666666","--text-primary":"#c2c2b0","--text-secondary":"#c2c2b0","--you-accent":"#c2c2b0","--you-row-bg":"rgb(255 255 255 / 3%)"},"nord":{"--bad":"#bf616a","--border":"rgb(255 255 255 / 10%)","--ok":"#a3be8c","--om-color-scheme":"dark","--page-plane":"#2e3440","--assistant-accent":"#81a1c1","--assistant-row-bg":"rgb(129 161 193 / 5%)","--assistant-text":"#81a1c1","--surface-1":"#2e3440","--surface-2":"#4c566a","--text-muted":"#4c566a","--text-primary":"#d8dee9","--text-secondary":"#d8dee9","--you-accent":"#d8dee9","--you-row-bg":"rgb(255 255 255 / 3%)"},"osaka-jade":{"--bad":"#ff5345","--border":"rgb(255 255 255 / 10%)","--ok":"#549e6a","--om-color-scheme":"dark","--page-plane":"#111c18","--assistant-accent":"#509475","--assistant-row-bg":"rgb(80 148 117 / 5%)","--assistant-text":"#509475","--surface-1":"#111c18","--surface-2":"#53685b","--text-muted":"#53685b","--text-primary":"#c1c497","--text-secondary":"#c1c497","--you-accent":"#c1c497","--you-row-bg":"rgb(255 255 255 / 3%)"},"retro-82":{"--bad":"#f85525","--border":"rgb(255 255 255 / 10%)","--ok":"#028391","--om-color-scheme":"dark","--page-plane":"#05182e","--assistant-accent":"#faa968","--assistant-row-bg":"rgb(250 169 104 / 5%)","--assistant-text":"#faa968","--surface-1":"#05182e","--surface-2":"#2a6b78","--text-muted":"#2a6b78","--text-primary":"#f6dcac","--text-secondary":"#f6dcac","--you-accent":"#f6dcac","--you-row-bg":"rgb(255 255 255 / 3%)"},"ristretto":{"--bad":"#fd6883","--border":"rgb(255 255 255 / 10%)","--ok":"#adda78","--om-color-scheme":"dark","--page-plane":"#2c2525","--assistant-accent":"#f38d70","--assistant-row-bg":"rgb(243 141 112 / 5%)","--assistant-text":"#f38d70","--surface-1":"#2c2525","--surface-2":"#72696a","--text-muted":"#72696a","--text-primary":"#e6d9db","--text-secondary":"#e6d9db","--you-accent":"#e6d9db","--you-row-bg":"rgb(255 255 255 / 3%)"},"rose-pine":{"--bad":"#b4637a","--border":"rgb(0 0 0 / 10%)","--ok":"#286983","--om-color-scheme":"light","--page-plane":"#faf4ed","--assistant-accent":"#56949f","--assistant-row-bg":"rgb(86 148 159 / 5%)","--assistant-text":"#56949f","--surface-1":"#faf4ed","--surface-2":"#cecacd","--text-muted":"#cecacd","--text-primary":"#575279","--text-secondary":"#575279","--you-accent":"#575279","--you-row-bg":"rgb(0 0 0 / 3%)"},"solitude":{"--bad":"#565d60","--border":"rgb(255 255 255 / 10%)","--ok":"#9fa5a9","--om-color-scheme":"dark","--page-plane":"#101315","--assistant-accent":"#798186","--assistant-row-bg":"rgb(121 129 134 / 5%)","--assistant-text":"#798186","--surface-1":"#101315","--surface-2":"#4b4e55","--text-muted":"#4b4e55","--text-primary":"#cacccc","--text-secondary":"#cacccc","--you-accent":"#cacccc","--you-row-bg":"rgb(255 255 255 / 3%)"},"tokyo-night":{"--bad":"#f7768e","--border":"rgb(255 255 255 / 10%)","--ok":"#9ece6a","--om-color-scheme":"dark","--page-plane":"#1a1b26","--assistant-accent":"#7aa2f7","--assistant-row-bg":"rgb(122 162 247 / 5%)","--assistant-text":"#7aa2f7","--surface-1":"#1a1b26","--surface-2":"#414868","--text-muted":"#414868","--text-primary":"#a9b1d6","--text-secondary":"#a9b1d6","--you-accent":"#a9b1d6","--you-row-bg":"rgb(255 255 255 / 3%)"},"vantablack":{"--bad":"#a4a4a4","--border":"rgb(255 255 255 / 10%)","--ok":"#b6b6b6","--om-color-scheme":"dark","--page-plane":"#000000","--assistant-accent":"#8d8d8d","--assistant-row-bg":"rgb(141 141 141 / 5%)","--assistant-text":"#8d8d8d","--surface-1":"#000000","--surface-2":"#7a7a7a","--text-muted":"#7a7a7a","--text-primary":"#ffffff","--text-secondary":"#ffffff","--you-accent":"#ffffff","--you-row-bg":"rgb(255 255 255 / 3%)"},"white":{"--bad":"#2a2a2a","--border":"rgb(0 0 0 / 10%)","--ok":"#3a3a3a","--om-color-scheme":"light","--page-plane":"#ffffff","--assistant-accent":"#6e6e6e","--assistant-row-bg":"rgb(110 110 110 / 5%)","--assistant-text":"#6e6e6e","--surface-1":"#ffffff","--surface-2":"#808080","--text-muted":"#808080","--text-primary":"#000000","--text-secondary":"#000000","--you-accent":"#000000","--you-row-bg":"rgb(0 0 0 / 3%)"}};
+var THEME_LABELS = {"atelier":"Atelier","batou":"Batou","bauhaus":"Bauhaus","catppuccin":"Catppuccin","catppuccin-latte":"Catppuccin Latte","ethereal":"Ethereal","everforest":"Everforest","flexoki-light":"Flexoki Light","greek-noir":"Greek Noir","gruvbox":"Gruvbox","gruvbox-material":"Gruvbox Material","hackerman":"Hackerman","kanagawa":"Kanagawa","last-horizon":"Last Horizon","lumon":"Lumon","lupine":"Lupine","matrix":"Matrix","matte-black":"Matte Black","mechanoonna":"Mechanoonna","miasma":"Miasma","nord":"Nord","osaka-jade":"Osaka Jade","retro-82":"Retro 82","ristretto":"Ristretto","rose-pine":"Rose Pine","solitude":"Solitude","tokyo-night":"Tokyo Night","vantablack":"Vantablack","white":"White"};
+var THEME_KEY = "backtalk-theme";
+
+function applyTheme(name) {
+  var vars = THEMES[name];
+  if (!vars) return;
+  var css = ":root{";
+  for (var k in vars) css += k + ":" + vars[k] + ";";
+  css += "}";
+  var el = document.getElementById("theme-override");
+  if (!el) {
+    el = document.createElement("style");
+    el.id = "theme-override";
+    document.head.appendChild(el);
+  }
+  el.textContent = css;
+}
+
 (function () {
   "use strict";
-  var BRIDGE_ENDPOINT = "http://127.0.0.1:9847/v1/style";
-  var BRIDGE_TOKEN = "a3a5798636584b2e6b5bc5d5b2d8853475080cbc5e8b4b8e53559f1f948de335";
-  var POLL_MS = 2000;
-  var styleEl = null;
-  var lastRevision = null;
-
-  function applyTheme() {
-    var url = BRIDGE_ENDPOINT
-      + "?hostname=" + encodeURIComponent(location.host.toLowerCase())
-      + "&pathname=" + encodeURIComponent(location.pathname);
-    fetch(url, {
-      cache: "no-store",
-      headers: { "X-Omarchy-Bridge-Token": BRIDGE_TOKEN }
-    }).then(function (r) {
-      if (!r.ok) throw new Error("bridge HTTP " + r.status);
-      return r.json();
-    }).then(function (data) {
-      if (data.revision === lastRevision) return;
-      lastRevision = data.revision;
-      if (!styleEl) {
-        styleEl = document.createElement("style");
-        styleEl.id = "omarchy-bridge-theme";
-        document.head.appendChild(styleEl);
-      }
-      styleEl.textContent = data.css;
-    }).catch(function () {
-      // No bridge reachable (viewed off this machine, bridge not
-      // running, etc.) — leave whatever's already applied, never
-      // break the page over this.
-    });
+  try {
+    var saved = localStorage.getItem(THEME_KEY);
+    if (saved && saved !== "solitude" && THEMES[saved]) applyTheme(saved);
+  } catch (e) {
+    // Private browsing / storage blocked -- Solitude default stands.
   }
-
-  applyTheme();
-  setInterval(applyTheme, POLL_MS);
 })();
 </script>
 </head>
@@ -441,24 +464,21 @@
         <div class="settings-section">
           <div class="settings-label">Engine</div>
           <div class="model-btns">
-            <button class="model-btn" type="button" data-engine="cartesia" data-phrase="switch to cartesia voice">Cartesia</button>
-            <button class="model-btn" type="button" data-engine="pocket" data-phrase="switch to pocket voice">Pocket TTS</button>
-            <button class="model-btn" type="button" data-engine="chatterbox" data-phrase="switch to chatterbox voice">Chatterbox</button>
+            <button class="model-btn" type="button" data-engine="local" data-phrase="switch to local voice">Local</button>
+            <button class="model-btn" type="button" data-engine="cloud" data-phrase="switch to cloud voice">Cloud</button>
           </div>
         </div>
+        <!-- No default Voice button row: CFG["voices"] is empty out of
+             the box (see config.py), and a row of buttons for
+             characters that don't exist would just be broken UI. Once
+             you've added custom voices to backtalk.json (see the
+             README), "switch voice to <name>" works by voice or typed
+             command immediately -- add matching buttons here yourself
+             if you want them, same data-voice/data-phrase shape as
+             the Model/Engine rows above. -->
         <div class="settings-section">
-          <div class="settings-label">Voice</div>
-          <div class="model-btns voice-btns">
-            <button class="model-btn" type="button" data-voice="samantha" data-phrase="switch voice to samantha">Sam</button>
-            <button class="model-btn" type="button" data-voice="niel" data-phrase="switch voice to niel">Niel</button>
-            <button class="model-btn" type="button" data-voice="zoi" data-phrase="switch voice to zoi">Zoi</button>
-            <button class="model-btn" type="button" data-voice="bok" data-phrase="switch voice to bok">Bok</button>
-            <button class="model-btn" type="button" data-voice="aur" data-phrase="switch voice to aur">Aur</button>
-            <button class="model-btn" type="button" data-voice="fria" data-phrase="switch voice to fria">Fria</button>
-            <button class="model-btn" type="button" data-voice="elliot" data-phrase="switch voice to elliot">Elliot</button>
-            <button class="model-btn" type="button" data-voice="hal" data-phrase="switch voice to hal">Hal</button>
-            <button class="model-btn" type="button" data-voice="tars" data-phrase="switch voice to tars">TARS</button>
-          </div>
+          <div class="settings-label">Theme</div>
+          <select id="themeSelect" class="theme-select"></select>
         </div>
         <div class="settings-section">
           <div class="settings-label">Volume</div>
@@ -507,6 +527,7 @@
   var autoApproveToggle = document.getElementById("autoApproveToggle");
   var volumeSlider = document.getElementById("volumeSlider");
   var volumeValue = document.getElementById("volumeValue");
+  var themeSelect = document.getElementById("themeSelect");
   var hangupBtn = document.getElementById("hangupBtn");
   var chromeToggleDot = document.getElementById("chromeToggleDot");
   var rowBgToggleDot = document.getElementById("rowBgToggleDot");
@@ -670,7 +691,7 @@
   });
 
   function tagFor(speaker) {
-    return speaker === "you" ? "[you]" : "[sam]";
+    return speaker === "you" ? "[you]" : "[ai]";
   }
 
   // Minimal, dependency-free markdown -> HTML for transcript lines.
@@ -881,7 +902,7 @@
       } else if (btn.hasAttribute("data-effort")) {
         isActive = btn.getAttribute("data-effort") === state.effort;
       } else if (btn.hasAttribute("data-engine")) {
-        isActive = btn.getAttribute("data-engine") === (state.voice_mode || "cartesia");
+        isActive = btn.getAttribute("data-engine") === (state.voice_mode || "cloud");
       } else {
         isActive = btn.getAttribute("data-voice") === state.voice;
       }
@@ -927,6 +948,34 @@
   volumeSlider.addEventListener("change", function () {
     postInput("set volume to " + volumeSlider.value);
   });
+
+  // Theme picker: purely client-side (CSS + localStorage), no backend
+  // involved at all -- unlike every other settings-panel control, this
+  // never calls postInput. THEMES/THEME_LABELS/applyTheme/THEME_KEY are
+  // declared in the <head> script so a saved pick applies before first
+  // paint; this just builds the dropdown and wires further changes.
+  (function () {
+    var names = Object.keys(THEME_LABELS).sort(function (a, b) {
+      return THEME_LABELS[a].localeCompare(THEME_LABELS[b]);
+    });
+    var current = "solitude";
+    try {
+      var saved = localStorage.getItem(THEME_KEY);
+      if (saved && THEMES[saved]) current = saved;
+    } catch (e) {}
+    names.forEach(function (name) {
+      var opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = THEME_LABELS[name] + (name === "solitude" ? " (default)" : "");
+      if (name === current) opt.selected = true;
+      themeSelect.appendChild(opt);
+    });
+    themeSelect.addEventListener("change", function () {
+      var name = themeSelect.value;
+      applyTheme(name);
+      try { localStorage.setItem(THEME_KEY, name); } catch (e) {}
+    });
+  })();
 
   function autoGrow() {
     inputEl.style.height = "auto";

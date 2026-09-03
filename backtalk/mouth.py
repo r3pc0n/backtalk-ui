@@ -28,11 +28,7 @@ synth_stream). Cartesia needs no ffmpeg step — it hands back raw PCM
 directly in the format we ask for. The local-mode equivalent is Pocket
 TTS (kyutai-labs/pocket-tts) — CPU-only, no GPU contention, run as its
 own local HTTP server in its own venv (see _ensure_pocket) rather than
-imported into this one. A second local-GPU option, Chatterbox-Turbo
-(Resemble AI), sits below Pocket TTS and above Kokoro — same
-arm's-length local-server pattern as Pocket TTS, its own isolated venv
-at ~/my-agent/chatterbox-tts (see _ensure_chatterbox). Replaces CSM as
-of 2026-09-03, retired outright rather than left parked.
+imported into this one.
 
 Sentences are synthesized one at a time and queued for playback, so the
 first sentence is audible while later ones are still rendering. Playback
@@ -66,15 +62,11 @@ from backtalk.vlog import log
 KOKORO_RATE = 24000
 EL_RATE = 44100
 CARTESIA_RATE = 44100
-CHATTERBOX_RATE = 24000
 POCKET_RATE = 24000
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 
 _pipe = None
 _pipe_lock = threading.Lock()
-
-_chatterbox_proc = None    # subprocess.Popen of chatterbox_server.py, or None
-_chatterbox_lock = threading.Lock()
 
 _pocket_proc = None        # subprocess.Popen of `pocket-tts serve`, or None
 _pocket_file_httpd = None  # localhost static file server for the voice, or None
@@ -435,149 +427,14 @@ def _cartesia_ready() -> bool:
                 and _get_cartesia_key())
 
 
-def _chatterbox_server_healthy(base_url: str) -> bool:
-    import httpx
-    try:
-        return httpx.get(f"{base_url}/health", timeout=1.0).status_code == 200
-    except Exception:
-        return False
-
-
-def _ensure_chatterbox():
-    """Lazy-start Chatterbox's local HTTP server -- its own process, in
-    its own venv (chatterbox-tts/.venv), never imported into this one.
-    Chatterbox pins torch==2.6.0; this venv runs 2.13.0+cu130, and
-    mixing them risks exactly the transitive dependency regression that
-    already happened once (see backtalk.md's setuptools incident) and
-    again while THIS install was being set up (see the vault's
-    Chatterbox TTS Engine note). Same arm's-length shape as
-    _ensure_pocket, just with a hand-written server (Chatterbox ships
-    no CLI/serve command the way pocket-tts does) — see
-    chatterbox-tts/chatterbox_server.py.
-
-    Replaces CSM as of 2026-09-03: CSM ran in-process (imported straight
-    into this venv) rather than arm's-length, which is exactly the
-    pattern this avoids. Retired outright per Des's call, not left
-    parked.
-
-    Swapped from Chatterbox-Turbo to the full model, same day, after a
-    live head-to-head: VRAM difference measured negligible (~3.3GB vs
-    ~3.4GB), but the full model exposes exaggeration/cfg_weight for
-    tuning, which Turbo silently ignores. exaggeration is baked into
-    voice conditioning at server startup (a restart is needed to change
-    it); cfg_weight applies per-call so it's cheaper to retune, though
-    this server still bakes it in at launch for simplicity — see
-    chatterbox_server.py."""
-    import subprocess
-    import time
-    from pathlib import Path
-
-    global _chatterbox_proc
-    with _chatterbox_lock:
-        cfg = CFG["chatterbox"]
-        repo_root = Path(__file__).resolve().parents[1]
-        venv_python = cfg.get("python") or str(
-            repo_root.parent / "chatterbox-tts" / ".venv" / "bin" / "python")
-        server_script = cfg.get("server_script") or str(
-            repo_root.parent / "chatterbox-tts" / "chatterbox_server.py")
-        if not Path(venv_python).exists():
-            raise RuntimeError(
-                f"chatterbox venv python not found at {venv_python} — "
-                f"set up ~/my-agent/chatterbox-tts/.venv or set chatterbox.python")
-
-        ref_path = cfg.get("reference_audio") or ""
-        if not ref_path:
-            raise RuntimeError("chatterbox.reference_audio not set")
-
-        base_url = cfg["url"].rstrip("/")
-        if not _chatterbox_server_healthy(base_url):
-            port = base_url.rsplit(":", 1)[-1]
-            log(f"[mouth] starting chatterbox server on port {port}...")
-            log_path = repo_root / "logs" / "chatterbox.log"
-            log_path.parent.mkdir(exist_ok=True)
-            # Read fresh off disk, not from the in-memory CFG global --
-            # CFG is loaded once at process start and _write_config_key
-            # is the only thing that ever mutates it live, which these
-            # two keys never go through (there's no console verb for
-            # them). Without this, tuning exaggeration/cfg_weight in
-            # backtalk.json would silently do nothing until the whole
-            # backtalk process restarts, defeating the point of tuning
-            # without a restart. The subprocess itself already relaunches
-            # fresh on every call here, so this just makes sure it
-            # launches with the CURRENT values, not stale ones frozen at
-            # import time.
-            try:
-                import json as _json
-                from backtalk.config import CONFIG_PATH as _CONFIG_PATH
-                _live_cfg = _json.loads(_CONFIG_PATH.read_text()).get("chatterbox", {})
-            except Exception:
-                _live_cfg = {}
-            exaggeration = str(_live_cfg.get("exaggeration", cfg.get("exaggeration", 0.5)))
-            cfg_weight = str(_live_cfg.get("cfg_weight", cfg.get("cfg_weight", 0.5)))
-            with open(log_path, "ab") as logf:
-                _chatterbox_proc = subprocess.Popen(
-                    [venv_python, server_script, "--port", port, "--voice", ref_path,
-                     "--exaggeration", exaggeration, "--cfg-weight", cfg_weight],
-                    stdout=logf, stderr=subprocess.STDOUT)
-            # Longer budget than pocket's 30s -- first-ever launch also
-            # downloads model weights, not just loads them from disk.
-            deadline = time.time() + 60
-            while time.time() < deadline:
-                if _chatterbox_server_healthy(base_url):
-                    break
-                time.sleep(0.5)
-            else:
-                raise RuntimeError(
-                    f"chatterbox server did not become healthy within 60s "
-                    f"(see {log_path})")
-            log("[mouth] chatterbox ready")
-
-
-def _shutdown_chatterbox():
-    """Tear down what _ensure_chatterbox started, so backtalk exiting
-    doesn't leave an orphaned chatterbox server (and its GPU memory)
-    behind -- same reasoning as _shutdown_pocket."""
-    import subprocess
-    global _chatterbox_proc
-    with _chatterbox_lock:
-        if _chatterbox_proc is not None:
-            _chatterbox_proc.terminate()
-            try:
-                _chatterbox_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                _chatterbox_proc.kill()
-            _chatterbox_proc = None
-
-
-def _stream_chatterbox(text: str):
-    """Chatterbox -> int16 PCM at CHATTERBOX_RATE. Blocks until the
-    whole sentence is rendered server-side then returns it as one
-    chunk -- the library exposes no token-streaming generate() the way
-    Pocket TTS does, so there's no incremental-release benefit to
-    chase here, unlike _stream_pocket. Same WAV-response parsing
-    (skip past the "data" subchunk marker) either way.
-
-    voice resolves fresh from CFG on every call, same pattern
-    _stream_pocket already uses for CFG["pocket"]["voice"] -- a
-    character switch takes effect on the very next sentence, no
-    restart. The server caches each character's conditioning after
-    first use (see chatterbox_server.py's _conds_for)."""
-    import httpx
-
-    cfg = CFG["chatterbox"]
-    _ensure_chatterbox()
-    base_url = cfg["url"].rstrip("/")
-    voice = cfg.get("voice", "samantha")
-    r = httpx.post(f"{base_url}/tts", data={"text": text, "voice": voice}, timeout=60.0)
-    r.raise_for_status()
-    data = r.content
-    idx = data.find(b"data")
-    if idx == -1 or len(data) < idx + 8:
-        raise RuntimeError("chatterbox response missing WAV data chunk")
-    pcm = data[idx + 8:]
-    usable = len(pcm) - (len(pcm) % 2)
-    if usable:
-        yield np.frombuffer(pcm[:usable], dtype=np.int16)
+def cloud_ready() -> bool:
+    """Whether "cloud" voice_mode would actually speak as Cartesia or
+    ElevenLabs right now, rather than silently degrading straight to
+    Kokoro. Public (no leading underscore) specifically so main.py's
+    "switch to cloud voice" verb can check this before switching,
+    without reaching into the two private per-engine checks itself —
+    what counts as "cloud is usable" is this module's call to make."""
+    return _cartesia_ready() or _elevenlabs_ready()
 
 
 def _pocket_server_healthy(base_url: str) -> bool:
@@ -740,15 +597,16 @@ def _stream_pocket(text: str):
 
 def synth_stream(text: str, timeout: float = 30.0):
     """One sentence -> yields (sample_rate, pcm_chunk) as the TTS
-    renders. voice_mode is the explicit three-way switch (the voice
-    console's "switch to cartesia/pocket/chatterbox voice"): "cartesia"
-    (the default) tries Cartesia then ElevenLabs; "pocket" tries Pocket
-    TTS only; "chatterbox" tries Chatterbox only — no crossover between
-    the three, picking one means getting that one. Kokoro is always the
-    silent final fallback, on ANY failure in any mode (or if the
-    selected engine's config block is disabled). Degrade, never mute."""
-    mode = CFG.get("voice_mode", "cartesia")
-    if mode == "pocket":
+    renders. voice_mode is the explicit switch (the voice console's
+    "switch to cloud/local voice"): "cloud" (the default) tries
+    Cartesia then ElevenLabs, whichever you've set up; "local" tries
+    Pocket TTS if you've set it up, otherwise falls through to Kokoro
+    (zero setup needed) — no crossover between the two categories,
+    picking one means getting that one. Kokoro is always the silent
+    final fallback, on ANY failure in any mode (or if the selected
+    engine's config block is disabled). Degrade, never mute."""
+    mode = CFG.get("voice_mode", "cloud")
+    if mode == "local":
         if CFG.get("pocket", {}).get("enabled"):
             try:
                 for pcm in _stream_pocket(text):
@@ -759,18 +617,6 @@ def synth_stream(text: str, timeout: float = 30.0):
                     f"falling back to {CFG['voice']}")
         else:
             log("[mouth] pocket selected but disabled — "
-                f"falling back to {CFG['voice']}")
-    elif mode == "chatterbox":
-        if CFG.get("chatterbox", {}).get("enabled"):
-            try:
-                for pcm in _stream_chatterbox(text):
-                    yield CHATTERBOX_RATE, pcm
-                return
-            except Exception as e:
-                log(f"[mouth] chatterbox failed ({str(e)[:60]}) — "
-                    f"falling back to {CFG['voice']}")
-        else:
-            log("[mouth] chatterbox selected but disabled — "
                 f"falling back to {CFG['voice']}")
     else:
         if _cartesia_ready():
@@ -843,7 +689,6 @@ class Mouth:
         self.shut_up()
         self.ducker.restore_now()
         _shutdown_pocket()
-        _shutdown_chatterbox()
 
     def wait_done(self, timeout: float | None = None):
         """Block until the queue is drained and playback finished."""

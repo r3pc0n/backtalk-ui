@@ -33,15 +33,15 @@ to low" (or medium, high, max) / "usage report" / "go hands free" and
 "push to talk mode" (the MIC) /
 "stop asking for permission" and "start asking again" (permissions,
 called auto-approve, a different axis than the microphone on purpose) /
-"switch to cartesia voice", "switch to pocket voice", and "switch to
-chatterbox voice" (voice_mode: which TTS engine speaks — Cartesia
-(cloud), Pocket TTS (local, CPU), or Chatterbox (local, GPU) — Kokoro
-is always the silent last-resort fallback if the chosen engine fails)
-/ "switch voice
-to hal" (or niel, zoi, bok, aur, fria, elliot, tars, samantha — the
-character both TTS engines speak as, Pocket's safetensors and
-Cartesia's clone id switching together so it's audible regardless of
-voice_mode) / "set volume to 70" (0-300, output gain applied after
+"switch to cloud voice" and "switch to local voice" (voice_mode: cloud
+tries Cartesia then ElevenLabs, whichever you've set up; local tries
+Pocket TTS if you've set it up, otherwise Kokoro — which needs no
+setup at all. Kokoro is always the silent last-resort fallback if the
+chosen engine fails) / "switch voice to <name>" for any character
+you've added to CFG["voices"] in backtalk.json (empty by default — see
+the README), Pocket's safetensors and Cartesia's clone id switching
+together so it's audible regardless of voice_mode) / "set volume to
+70" (0-300, output gain applied after
 whichever engine renders the audio — no engine or restart needed).
 And with permission_mode "ask" (the default), gated tool calls ASK OUT
 LOUD and your spoken yes or no decides them; any other answer is
@@ -78,7 +78,7 @@ from backtalk.brain import WarmBrain
 from backtalk.config import CFG
 from backtalk.ears import (Ears, explain_audio_failure, record_held,
                            warm as warm_ears)
-from backtalk.mouth import Mouth
+from backtalk.mouth import Mouth, cloud_ready
 from backtalk.ptt import PTTListener
 from backtalk.vlog import log
 
@@ -475,40 +475,26 @@ CONSOLE_VERBS = {
                   "auto approve mode"),
     "ask":       ("start asking again", "ask before acting",
                   "ask for permission again"),
-    "voicecartesia": ("switch to cartesia voice", "use cartesia voice",
-                      "cartesia voice mode", "switch to the cartesia voice"),
-    "voicepocket": ("switch to pocket voice", "use pocket voice",
-                    "pocket voice mode", "switch to the pocket voice"),
-    "voicechatterbox": ("switch to chatterbox voice", "use chatterbox voice",
-                        "chatterbox voice mode", "switch to the chatterbox voice"),
+    "voicecloud": ("switch to cloud voice", "use cloud voice",
+                   "cloud voice mode", "switch to the cloud voice"),
+    "voicelocal": ("switch to local voice", "use local voice",
+                   "local voice mode", "switch to the local voice"),
 }
 _EFFORTS = ("low", "medium", "high", "xhigh", "max")
-# Characters available on both TTS engines. Pocket TTS resolves
-# CFG["pocket"]["voice"] fresh on every call (mouth.py's
-# _stream_pocket) against a <name>.safetensors file in backtalk/voices/;
-# Cartesia resolves CFG["cartesia"]["voice_id"] fresh on every call
-# (_stream_cartesia) against one of these cloned voice ids. Both mean a
-# character switch needs no restart on either engine.
-_VOICES = ("samantha", "niel", "zoi", "bok", "aur", "fria", "elliot",
-           "hal", "tars")
-_VOICE_LABELS = {"samantha": "Samantha", "niel": "Niel", "zoi": "Zoi",
-                  "bok": "Bok", "aur": "Aur", "fria": "Fria",
-                  "elliot": "Elliot", "hal": "Hal", "tars": "TARS"}
-# Cartesia clone ids, one per character above (Des's own audition set,
-# 2026-09-02) -- "samantha" here is the same "Echo-02" id the config
-# already shipped with; that name was a leftover test label, this IS
-# her Cartesia voice, not a distinct character.
-_CARTESIA_VOICE_IDS = {
-    "samantha": "d924553b-00a8-475d-a191-9d2759219bd2",
-    "niel": "ecf99307-370e-478b-89fd-4054a901b8ee",
-    "zoi": "4b4c66eb-4866-4893-955d-f6e086afecf1",
-    "bok": "34ea0150-091b-41cb-bb23-12b36aa4c7fd",
-    "aur": "5ddee9a3-48e1-4b7e-ad13-35695912e82f",
-    "fria": "b45e1b18-0355-4c62-ba53-671a1c8d1309",
-    "elliot": "cebbfece-8021-473e-8064-5e5cd246713d",
-    "hal": "513cc5a5-eb73-4fc6-8636-3950652357ec",
-    "tars": "dc422830-6f36-4248-9bd8-0c483554768c",
-}
+# Characters are config-driven, not hardcoded -- CFG["voices"] in
+# backtalk.json, empty by default (see config.py DEFAULTS). Adding one
+# is a config edit, not a code edit: {"<name>": {"cartesia_voice_id":
+# "...", "label": "..."}} (both optional -- label defaults to
+# name.capitalize(), cartesia_voice_id only needed if you've cloned
+# the character on Cartesia). Pocket TTS resolves CFG["pocket"]["voice"]
+# fresh on every call (mouth.py's _stream_pocket) against a
+# <name>.safetensors file in backtalk/voices/ -- no config entry needed
+# for that half, just the file. Cartesia resolves CFG["cartesia"]
+# ["voice_id"] fresh on every call (_stream_cartesia) against
+# voices[name]["cartesia_voice_id"]. Both mean a character switch
+# needs no restart on either engine, and CFG is read live here too, so
+# a voice added to backtalk.json is usable immediately -- see the
+# README for the full walkthrough.
 
 
 def console_match(text):
@@ -520,7 +506,7 @@ def console_match(text):
         if norm in (f"set effort to {lvl}", f"effort {lvl}",
                     f"slash effort {lvl}"):
             return f"effort:{lvl}"
-    for name in _VOICES:
+    for name in CFG.get("voices", {}):
         if norm == f"switch voice to {name}":
             return f"voice:{name}"
     m = re.match(r"^set volume to (\d+)(?: percent)?$", norm)
@@ -796,13 +782,13 @@ async def speak_reply(brain: WarmBrain, mouth: Mouth, text: str):
         if first:
             log(f"[{NAME}] ({time.time()-t0:.1f}s to first) {s}"
                 + (f"  <directions: {pending}>" if pending else ""))
-            transcript_server.add_event("samantha", s)
+            transcript_server.add_event("assistant", s)
             mouth.say_chunk(s, pending)
             pending = []
             first = False
         else:
             log(f"[{NAME}] {s}" + (f"  <directions: {pending}>" if pending else ""))
-            transcript_server.add_event("samantha", s)
+            transcript_server.add_event("assistant", s)
             batch.append(s)
             if len(batch) >= 2:
                 mouth.say_chunk(" ".join(batch), pending)
@@ -937,8 +923,8 @@ async def amain():
             model=brain.model,
             effort=boot_effort if boot_effort in _EFFORTS else "",
             auto_approve=_AUTOAPPROVE["on"],
-            voice_mode=CFG.get("voice_mode", "cartesia"),
-            voice=CFG.get("pocket", {}).get("voice", "samantha"),
+            voice_mode=CFG.get("voice_mode", "cloud"),
+            voice=CFG.get("pocket", {}).get("voice", "default"),
             volume=CFG.get("volume", 100))
 
     async def run_console(verb):
@@ -1002,14 +988,13 @@ async def amain():
             name = verb.split(":", 1)[1]
             repo_root = Path(__file__).resolve().parents[1]
             safet = repo_root / "voices" / f"{name}.safetensors"
-            cid = _CARTESIA_VOICE_IDS.get(name)
-            chatterbox_ref = (repo_root.parent / "chatterbox-tts" / "voices"
-                               / f"{name}-reference.wav")
+            voice_cfg = CFG.get("voices", {}).get(name, {})
+            cid = voice_cfg.get("cartesia_voice_id")
             have_pocket = safet.exists()
             have_cartesia = cid is not None
-            have_chatterbox = chatterbox_ref.exists()
-            if not (have_pocket or have_cartesia or have_chatterbox):
-                mouth.say(f"I don't have a voice set up for {name} yet.")
+            if not (have_pocket or have_cartesia):
+                mouth.say(f"I don't have a voice set up for {name} yet. "
+                          "Check the README for how to add one.")
             else:
                 # One character selection drives every engine at once,
                 # so flipping voice_mode later doesn't leave you on a
@@ -1021,11 +1006,8 @@ async def amain():
                 if have_cartesia:
                     CFG["cartesia"]["voice_id"] = cid
                     saved = _write_config_key("cartesia", CFG["cartesia"]) and saved
-                if have_chatterbox:
-                    CFG["chatterbox"]["voice"] = name
-                    saved = _write_config_key("chatterbox", CFG["chatterbox"]) and saved
                 transcript_server.set_state(voice=name)
-                label = _VOICE_LABELS.get(name, name)
+                label = voice_cfg.get("label") or name.capitalize()
                 # This confirmation is itself synthesized AFTER the
                 # switch above, so it comes out in the new voice on
                 # whichever engine is currently live -- the switch
@@ -1078,50 +1060,37 @@ async def amain():
                 key = str(CFG.get("ptt_key", "home")).replace("_", " ")
                 mouth.say(f"Push to talk. Hold the {key} key and "
                           "talk; the mic stays closed otherwise.")
-        elif verb == "voicecartesia":
+        elif verb == "voicecloud":
             resp = ""
-            if CFG.get("voice_mode", "cartesia") == "cartesia":
-                mouth.say("Already on cartesia voice.")
+            if not cloud_ready():
+                mouth.say("Cloud voice needs a Cartesia or ElevenLabs "
+                          "key set up first — check the README for "
+                          "how to add one.")
+            elif CFG.get("voice_mode", "cloud") == "cloud":
+                mouth.say("Already on cloud voice.")
             else:
-                saved = _write_config_key("voice_mode", "cartesia")
-                transcript_server.set_state(voice_mode="cartesia")
-                mouth.say(("Switched to cartesia voice, and that's "
+                saved = _write_config_key("voice_mode", "cloud")
+                transcript_server.set_state(voice_mode="cloud")
+                mouth.say(("Switched to cloud voice, and that's "
                            "saved as your default. " if saved else
-                           "Switched to cartesia voice for this session. "
+                           "Switched to cloud voice for this session. "
                            "The config file couldn't be written, so "
                            "tell me again after a restart. ")
-                          + "Say switch to pocket voice or switch to "
-                            "chatterbox voice to change it.")
-        elif verb == "voicepocket":
+                          + "Say switch to local voice to change it.")
+        elif verb == "voicelocal":
             resp = ""
-            if CFG.get("voice_mode", "cartesia") == "pocket":
-                mouth.say("Already on pocket voice.")
+            if CFG.get("voice_mode", "cloud") == "local":
+                mouth.say("Already on local voice.")
             else:
-                saved = _write_config_key("voice_mode", "pocket")
-                transcript_server.set_state(voice_mode="pocket")
-                mouth.say(("Switched to pocket voice. Speech now "
-                           "generates on your own CPU, and that's "
+                saved = _write_config_key("voice_mode", "local")
+                transcript_server.set_state(voice_mode="local")
+                mouth.say(("Switched to local voice. Speech now "
+                           "generates on your own machine, and that's "
                            "saved as your default. " if saved else
-                           "Switched to pocket voice for this session. "
+                           "Switched to local voice for this session. "
                            "The config file couldn't be written, so "
                            "tell me again after a restart. ")
-                          + "Say switch to cartesia voice or switch to "
-                            "chatterbox voice to change it.")
-        elif verb == "voicechatterbox":
-            resp = ""
-            if CFG.get("voice_mode", "cartesia") == "chatterbox":
-                mouth.say("Already on chatterbox voice.")
-            else:
-                saved = _write_config_key("voice_mode", "chatterbox")
-                transcript_server.set_state(voice_mode="chatterbox")
-                mouth.say(("Switched to chatterbox voice. Speech now "
-                           "generates on your own GPU, and that's "
-                           "saved as your default. " if saved else
-                           "Switched to chatterbox voice for this session. "
-                           "The config file couldn't be written, so "
-                           "tell me again after a restart. ")
-                          + "Say switch to cartesia voice or switch to "
-                            "pocket voice to change it.")
+                          + "Say switch to cloud voice to change it.")
         elif verb == "noask":
             resp = ""
             _CONFIRM["verb"] = "noask"
