@@ -43,6 +43,8 @@ Should show only `origin` → `backtalk-ui`. **Don't add an `upstream` remote po
 
 Once you've confirmed it works, `rm -rf backtalk.old`.
 
+*(Why swap the whole folder instead of `git merge`-ing this in as a patch? This fork shares real git history with stock backtalk, so a merge is technically possible — but only cleanly if your install hasn't drifted from where this fork branched off, which gets less likely the longer you've had it and the more times you've updated. A conflicted merge is a bad time if you're not used to resolving git conflicts by hand. The swap above works identically no matter your install's history, so that's the one path documented here.)*
+
 ### Starting fresh (no existing backtalk install)
 
 ```
