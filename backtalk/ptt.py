@@ -42,11 +42,23 @@ macOS needs Input Monitoring permission for the hosting terminal
 (System Settings -> Privacy & Security -> Input Monitoring). Windows
 works out of the box; some Linux desktops need the user in the `input`
 group or an X11 session.
+
+NATIVE WAYLAND (Hyprland, Sway, GNOME Wayland, ...): pynput has exactly
+two Linux backends and neither works unprivileged here. Its default
+backend rides XWayland's X11 record extension, which only sees events
+from X11/XWayland client windows -- a native Wayland window's keypresses
+never reach it, so the listener starts cleanly and silently sees nothing,
+key-independent. Its other backend (uinput) needs a real console and
+root. So on Linux this module reads /dev/input/event* directly via
+evdev instead (see PTTListener below): kernel-level, so it works
+identically on X11 and Wayland, and only needs the user in the `input`
+group (no root, no grab -- it's a passive read, so the key still reaches
+whatever app has focus too). Falls back to pynput if evdev can't find a
+usable keyboard device.
 """
+import sys
 import threading
 import time
-
-from pynput import keyboard
 
 
 def resolve_key(name: str):
@@ -74,37 +86,26 @@ def resolve_key(name: str):
         return keyboard.Key.home
 
 
-class PTTListener:
-    # How long a release must stand unchallenged before it is believed.
-    # Comfortably longer than any keyboard's auto-repeat period (measured
-    # at ~50ms on the hardware that exposed this; Windows' fastest setting
-    # is ~30ms) and short enough that letting go still feels instant.
+class _ReleaseGraceMixin:
+    """The debounce logic (see THE KEY-REPEAT TRAP above), shared by both
+    backends so a release is never trusted until it survives the grace
+    window unchallenged by a following press."""
     RELEASE_GRACE = 0.12
 
-    def __init__(self, key="home"):
-        self._key = resolve_key(key) if isinstance(key, str) else key
+    def _init_grace(self):
         self._held = False
-        self._release_t = None          # a release awaiting confirmation
+        self._release_t = None
         self._press_evt = threading.Event()
-        self._listener = keyboard.Listener(on_press=self._on_press,
-                                           on_release=self._on_release)
-        self._listener.daemon = True
-        self._listener.start()
 
-    def _on_press(self, k):
-        if k != self._key:
-            return
-        # A press cancels any pending release: that release was auto-repeat,
-        # not a human letting go.
+    def _on_press(self):
         self._release_t = None
         if not self._held:                      # filter key-repeat
             self._held = True
             self._press_evt.set()
 
-    def _on_release(self, k):
-        if k == self._key:
-            # PROVISIONAL. Believed only if no press follows; see _settle().
-            self._release_t = time.monotonic()
+    def _on_release(self):
+        # PROVISIONAL. Believed only if no press follows; see _settle().
+        self._release_t = time.monotonic()
 
     def _settle(self):
         """Commit a release that has stood unchallenged for the grace window."""
@@ -129,3 +130,126 @@ class PTTListener:
     def is_held(self) -> bool:
         self._settle()
         return self._held
+
+
+class _PynputPTTListener(_ReleaseGraceMixin):
+    def __init__(self, key="home"):
+        # Imported here, not at module load, so an X-less environment
+        # (no DISPLAY -- e.g. this module loaded from a systemd --user
+        # service with no desktop session vars) never crashes the whole
+        # process on import. evdev is the real backend on Linux; pynput
+        # is only reached at all if evdev's own constructor already
+        # failed, so paying its import cost eagerly buys nothing here.
+        global keyboard
+        from pynput import keyboard
+        self._key = resolve_key(key) if isinstance(key, str) else key
+        self._init_grace()
+        self._listener = keyboard.Listener(on_press=self._handle_press,
+                                           on_release=self._handle_release)
+        self._listener.daemon = True
+        self._listener.start()
+
+    def _handle_press(self, k):
+        if k == self._key:
+            self._on_press()
+
+    def _handle_release(self, k):
+        if k == self._key:
+            self._on_release()
+
+
+def _resolve_evdev_key(name, ecodes):
+    """'home' / 'f13' / 'right_alt' / any single character -> evdev KEY_* code."""
+    name = (name or "home").strip().lower()
+    if len(name) == 1 and name.isalnum():
+        code = getattr(ecodes, f"KEY_{name.upper()}", None)
+        if code is not None:
+            return code
+    aliases = {
+        "right_alt": "RIGHTALT", "left_alt": "LEFTALT",
+        "right_option": "RIGHTALT", "left_option": "LEFTALT",
+        "right_ctrl": "RIGHTCTRL", "left_ctrl": "LEFTCTRL",
+        "right_cmd": "RIGHTMETA", "left_cmd": "LEFTMETA",
+        "right_shift": "RIGHTSHIFT", "left_shift": "LEFTSHIFT",
+    }
+    key_name = aliases.get(name, name.upper())
+    code = getattr(ecodes, f"KEY_{key_name}", None)
+    if code is None:
+        raise ValueError(f"unknown key {name!r} for the evdev backend")
+    return code
+
+
+def _find_evdev_keyboards(key_code):
+    """Every readable input device that actually exposes this key -- a
+    keyboard usually shows up as several device nodes (the report ships
+    a Keychron dongle presenting FOUR: a plain keyboard interface, a
+    consumer-control node, and more), and only some of them carry the
+    real key table. Reading them all and letting whichever one fires
+    win costs nothing and removes the guesswork."""
+    import evdev
+    devices = []
+    for path in evdev.list_devices():
+        try:
+            dev = evdev.InputDevice(path)
+            caps = dev.capabilities().get(evdev.ecodes.EV_KEY, [])
+        except OSError:
+            continue
+        if key_code in caps:
+            devices.append(dev)
+    return devices
+
+
+class _EvdevPTTListener(_ReleaseGraceMixin):
+    """Kernel-level key listener via /dev/input -- works on X11 and native
+    Wayland alike. Read-only: never grabs the device, so the key still
+    reaches whatever window has focus, same as pynput's passive hook."""
+
+    def __init__(self, key="home"):
+        import evdev
+        self._evdev = evdev
+        self._key_code = _resolve_evdev_key(key, evdev.ecodes)
+        self._devices = _find_evdev_keyboards(self._key_code)
+        if not self._devices:
+            raise RuntimeError(
+                f"no readable /dev/input device exposes key {key!r} "
+                "(check you're in the 'input' group)")
+        self._init_grace()
+        self._stop = False
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        import select
+        devs = {d.fd: d for d in self._devices}
+        while not self._stop:
+            try:
+                ready, _, _ = select.select(devs.keys(), [], [], 0.5)
+            except (OSError, ValueError):
+                return
+            for fd in ready:
+                dev = devs[fd]
+                try:
+                    for event in dev.read():
+                        if event.type != self._evdev.ecodes.EV_KEY or \
+                                event.code != self._key_code:
+                            continue
+                        if event.value == 1:        # down
+                            self._on_press()
+                        elif event.value == 0:      # up
+                            self._on_release()
+                        # value == 2 is kernel autorepeat -- ignored; the
+                        # held-state filter above already covers it.
+                except OSError:
+                    continue
+
+
+def PTTListener(key="home"):
+    """Factory: evdev on Linux (works under Wayland; see the module
+    docstring), pynput everywhere else or if evdev can't find a device."""
+    if sys.platform.startswith("linux"):
+        try:
+            return _EvdevPTTListener(key)
+        except Exception as e:
+            print(f"[ptt] evdev backend unavailable ({e}) "
+                  "— falling back to pynput", flush=True)
+    return _PynputPTTListener(key)

@@ -91,6 +91,7 @@
     gap: 14px;
   }
   .idle-msg { color: var(--text-muted); font-size: 14px; }
+  .idle-error { color: var(--bad); font-size: 13px; max-width: 360px; text-align: center; }
   .start-btn {
     background: var(--samantha-accent);
     color: #ffffff;
@@ -156,6 +157,10 @@
     margin-bottom: 6px;
   }
   .model-btns { display: flex; gap: 6px; }
+  .voice-btns { flex-wrap: wrap; }
+  .volume-row { display: flex; align-items: center; gap: 10px; }
+  .volume-row input[type="range"] { flex: 1 1 auto; accent-color: var(--samantha-accent); }
+  .volume-value { flex: 0 0 auto; min-width: 3.2em; text-align: right; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
   .model-btn {
     flex: 1 1 0;
     background: var(--surface-2);
@@ -185,14 +190,16 @@
   /* Off by default: rows always left-aligned regardless of speaker.
      The settings toggle flips your own messages to the right, same
      idea as the original chat-bubble layout, without touching
-     anything else about the row (font, tag, border, copy button). */
+     anything else about the row (font, tag, border). */
   #log.align-you-right .row.you { flex-direction: row-reverse; }
   #log.align-you-right .row.you .text { text-align: right; }
 
   /* Log-line rows, not chat bubbles: always left-aligned, full width,
-     a tag like the real backtalk.log lines ("[you]", "[samantha]"),
-     segregated by a left border + faint background tint per speaker
-     instead of by which side of the screen the row sits on. */
+     a tag like the real backtalk.log lines ("[you]", "[sam]" -- shown
+     short here even though the underlying speaker id stays
+     "samantha"), segregated by a left border + faint background tint
+     per speaker instead of by which side of the screen the row sits
+     on. */
   .row {
     display: flex;
     align-items: flex-start;
@@ -227,22 +234,32 @@
     color: var(--text-primary);
   }
   .row.samantha .text { color: var(--samantha-text); }
-
-  .copy-btn {
-    flex: 0 0 auto;
-    opacity: 0;
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: var(--text-muted);
-    padding: 2px;
-    line-height: 0;
-    transition: opacity 120ms ease, color 120ms ease;
+  .text a {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: currentColor;
+    opacity: 0.85;
   }
-  .row:hover .copy-btn { opacity: 1; }
-  .copy-btn:hover { color: var(--text-primary); }
-  .copy-btn.copied { color: var(--ok); opacity: 1; }
-  .copy-btn svg { width: 14px; height: 14px; display: block; }
+  .text a:hover { opacity: 1; }
+  .text code {
+    background: rgba(255,255,255,0.08);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  .text pre {
+    margin: 6px 0;
+    padding: 10px 12px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow-x: auto;
+  }
+  .text pre code {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+  }
 
   #empty {
     margin: auto;
@@ -285,6 +302,51 @@
   }
   #send:disabled { opacity: 0.5; cursor: default; }
   #send:hover:not(:disabled) { filter: brightness(1.1); }
+
+  /* Two small dots, fixed outside the header/footer so they stay
+     reachable even when chrome-hidden removes both bars. Top-right,
+     not top-left: rows are left-aligned by default, so the right edge
+     of the log is the part least likely to ever have message text
+     under it. Sits below the header when it's visible; snaps to the
+     true top-right corner once the header's gone. The dark backing
+     chip keeps them legible against a long line that wraps underneath
+     anyway, without needing to raise the resting opacity further. */
+  .tiny-toggles {
+    position: fixed;
+    top: 56px; right: 8px;
+    display: flex; gap: 6px;
+    padding: 3px 4px;
+    border-radius: 999px;
+    background: rgba(0,0,0,0.35);
+    z-index: 50;
+    opacity: 0.35;
+    transition: opacity 150ms ease, top 150ms ease;
+  }
+  body.chrome-hidden .tiny-toggles { top: 6px; }
+  .tiny-toggles:hover { opacity: 0.9; }
+  .tiny-toggle-btn {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    border: none;
+    background: var(--text-muted);
+    cursor: pointer;
+    padding: 0;
+  }
+  .tiny-toggle-btn.active { background: var(--samantha-accent); }
+
+  body.chrome-hidden header,
+  body.chrome-hidden footer { display: none; }
+  /* Scrollbar hides together with the bars, but #log stays scrollable. */
+  body.chrome-hidden #log {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  body.chrome-hidden #log::-webkit-scrollbar { display: none; }
+
+  #log.no-row-bg .row {
+    background: none;
+    border-left-color: transparent;
+  }
 </style>
 <script>
 /* Omarchy theme bridge — fetches this page's generated CSS
@@ -377,13 +439,33 @@
           </div>
         </div>
         <div class="settings-section">
-          <label class="settings-row">
-            <span>Local voice (Pocket TTS, not Cartesia)</span>
-            <span class="toggle">
-              <input type="checkbox" id="voiceLocalToggle">
-              <span class="toggle-track"><span class="toggle-knob"></span></span>
-            </span>
-          </label>
+          <div class="settings-label">Engine</div>
+          <div class="model-btns">
+            <button class="model-btn" type="button" data-engine="cartesia" data-phrase="switch to cartesia voice">Cartesia</button>
+            <button class="model-btn" type="button" data-engine="pocket" data-phrase="switch to pocket voice">Pocket TTS</button>
+            <button class="model-btn" type="button" data-engine="chatterbox" data-phrase="switch to chatterbox voice">Chatterbox</button>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-label">Voice</div>
+          <div class="model-btns voice-btns">
+            <button class="model-btn" type="button" data-voice="samantha" data-phrase="switch voice to samantha">Sam</button>
+            <button class="model-btn" type="button" data-voice="niel" data-phrase="switch voice to niel">Niel</button>
+            <button class="model-btn" type="button" data-voice="zoi" data-phrase="switch voice to zoi">Zoi</button>
+            <button class="model-btn" type="button" data-voice="bok" data-phrase="switch voice to bok">Bok</button>
+            <button class="model-btn" type="button" data-voice="aur" data-phrase="switch voice to aur">Aur</button>
+            <button class="model-btn" type="button" data-voice="fria" data-phrase="switch voice to fria">Fria</button>
+            <button class="model-btn" type="button" data-voice="elliot" data-phrase="switch voice to elliot">Elliot</button>
+            <button class="model-btn" type="button" data-voice="hal" data-phrase="switch voice to hal">Hal</button>
+            <button class="model-btn" type="button" data-voice="tars" data-phrase="switch voice to tars">TARS</button>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-label">Volume</div>
+          <div class="volume-row">
+            <input type="range" id="volumeSlider" min="0" max="300" step="5" value="100">
+            <span id="volumeValue" class="volume-value">100%</span>
+          </div>
         </div>
         <div class="settings-section">
           <label class="settings-row">
@@ -405,6 +487,11 @@
     <button id="send">Send</button>
   </footer>
 
+  <div class="tiny-toggles">
+    <button id="chromeToggleDot" class="tiny-toggle-btn" type="button" title="Hide top/bottom bars"></button>
+    <button id="rowBgToggleDot" class="tiny-toggle-btn" type="button" title="Hide row background"></button>
+  </div>
+
 <script>
 (function () {
   "use strict";
@@ -418,13 +505,32 @@
   var alignToggle = document.getElementById("alignToggle");
   var statusPill = document.getElementById("statusPill");
   var autoApproveToggle = document.getElementById("autoApproveToggle");
-  var voiceLocalToggle = document.getElementById("voiceLocalToggle");
+  var volumeSlider = document.getElementById("volumeSlider");
+  var volumeValue = document.getElementById("volumeValue");
   var hangupBtn = document.getElementById("hangupBtn");
+  var chromeToggleDot = document.getElementById("chromeToggleDot");
+  var rowBgToggleDot = document.getElementById("rowBgToggleDot");
+
+  // Television's desktop client injects this global into every URL
+  // artifact webview it renders (contextIsolation is off for those, so
+  // it lands directly in scope here) -- confirmed against the live
+  // @telepath-computer/television-desktop preload, not guessed. Lets
+  // the launch chain later tell "already open in Television" apart
+  // from "already open in a plain browser tab" instead of guessing
+  // from window-manager state alone.
+  var POLL_SOURCE = (typeof window.__televisionContentBridge !== "undefined")
+    ? "television" : "browser";
 
   var since = 0;
   var bootId = null;
   var isIdle = null;   // null = not known yet; true/false once a poll answers
   var pinnedToBottom = true;
+  var startBtnEl = null, idleErrorEl = null;
+  var startPending = false;      // true from click until active, a
+                                  // reported failure, or a timeout
+  var startClickedAt = null;
+  var lastReportedFailed = false;
+  var START_TIMEOUT_MS = 20000;
 
   hangupBtn.addEventListener("click", function () {
     postInput("end voice mode");
@@ -439,20 +545,17 @@
     var msg = document.createElement("div");
     msg.className = "idle-msg";
     msg.textContent = "No active voice session.";
-    var btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "start-btn";
-    btn.textContent = "Start Call";
-    btn.addEventListener("click", function () {
-      btn.disabled = true;
-      btn.textContent = "Starting…";
-      // No need to wait on this or poll for completion -- the
-      // existing 300ms poll loop picks up the real session (and
-      // flips back to the active view) the moment it comes up.
-      fetch("/start", { method: "POST" }).catch(function () {});
-    });
+    idleErrorEl = document.createElement("div");
+    idleErrorEl.className = "idle-error";
+    idleErrorEl.hidden = true;
+    startBtnEl = document.createElement("button");
+    startBtnEl.type = "button";
+    startBtnEl.className = "start-btn";
+    startBtnEl.textContent = "Start Call";
+    startBtnEl.addEventListener("click", startCall);
     wrap.appendChild(msg);
-    wrap.appendChild(btn);
+    wrap.appendChild(idleErrorEl);
+    wrap.appendChild(startBtnEl);
     logEl.appendChild(wrap);
     emptyEl = null;
     statusPill.textContent = "Idle";
@@ -460,6 +563,35 @@
     inputEl.disabled = true;
     inputEl.placeholder = "No active call";
     sendEl.disabled = true;
+  }
+
+  function startCall() {
+    if (!startBtnEl) return;
+    startBtnEl.disabled = true;
+    startBtnEl.textContent = "Starting…";
+    if (idleErrorEl) idleErrorEl.hidden = true;
+    startPending = true;
+    startClickedAt = Date.now();
+    lastReportedFailed = false;
+    // No need to wait on this or poll for completion -- the existing
+    // 300ms poll loop picks up the real session (and flips back to
+    // the active view) the moment it comes up, a reported
+    // launch_failed the moment the launcher sees the chain die, or a
+    // client-side timeout below if neither of those ever fires.
+    fetch("/start", { method: "POST" }).catch(function () {});
+  }
+
+  function resetStartButton(message) {
+    startPending = false;
+    startClickedAt = null;
+    if (startBtnEl) {
+      startBtnEl.disabled = false;
+      startBtnEl.textContent = "Start Call";
+    }
+    if (idleErrorEl) {
+      idleErrorEl.textContent = message;
+      idleErrorEl.hidden = !message;
+    }
   }
 
   function showActiveView() {
@@ -470,6 +602,9 @@
     inputEl.disabled = false;
     inputEl.placeholder = "Type a message — same as speaking";
     sendEl.disabled = false;
+    startPending = false;
+    startClickedAt = null;
+    lastReportedFailed = false;
   }
 
   var ALIGN_KEY = "backtalk-transcript-align-you-right";
@@ -496,9 +631,30 @@
     } catch (e) {}
   });
 
-  var COPY_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" ' +
-    'stroke-width="1.4"><rect x="5.5" y="5.5" width="8" height="8" rx="1.2"/>' +
-    '<path d="M3.5 10.5h-1a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1"/></svg>';
+  var CHROME_KEY = "backtalk-transcript-chrome-hidden";
+  var ROWBG_KEY = "backtalk-transcript-no-row-bg";
+  try {
+    if (localStorage.getItem(CHROME_KEY) === "1") {
+      document.body.classList.add("chrome-hidden");
+      chromeToggleDot.classList.add("active");
+    }
+    if (localStorage.getItem(ROWBG_KEY) === "1") {
+      logEl.classList.add("no-row-bg");
+      rowBgToggleDot.classList.add("active");
+    }
+  } catch (e) {}
+
+  chromeToggleDot.addEventListener("click", function () {
+    var on = document.body.classList.toggle("chrome-hidden");
+    chromeToggleDot.classList.toggle("active", on);
+    try { localStorage.setItem(CHROME_KEY, on ? "1" : "0"); } catch (e) {}
+  });
+
+  rowBgToggleDot.addEventListener("click", function () {
+    var on = logEl.classList.toggle("no-row-bg");
+    rowBgToggleDot.classList.toggle("active", on);
+    try { localStorage.setItem(ROWBG_KEY, on ? "1" : "0"); } catch (e) {}
+  });
 
   function resetLog() {
     logEl.innerHTML = "";
@@ -514,7 +670,77 @@
   });
 
   function tagFor(speaker) {
-    return speaker === "you" ? "[you]" : "[samantha]";
+    return speaker === "you" ? "[you]" : "[sam]";
+  }
+
+  // Minimal, dependency-free markdown -> HTML for transcript lines.
+  // Escapes raw text first so nothing in a transcript line (tool
+  // output, error text, anything) can inject markup, then layers on
+  // a handful of safe, well-scoped transforms. Code/link spans are
+  // pulled out into placeholders before bold/italic run, so those
+  // regexes never reach inside a URL or a code span.
+  function escapeHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // "\uE000" is a Unicode Private Use Area codepoint -- it can't
+  // occur in ordinary transcript text, so wrapping a placeholder
+  // index in it is safe against collisions.
+  var PLACEHOLDER_MARK = "\uE000";
+
+  function markdownToHtml(raw) {
+    var placeholders = [];
+    function stash(html) {
+      placeholders.push(html);
+      return PLACEHOLDER_MARK + (placeholders.length - 1) + PLACEHOLDER_MARK;
+    }
+
+    var s = escapeHtml(raw);
+
+    // Fenced code blocks: ```lang\ncode``` (lang is ignored -- no
+    // syntax highlighter here, just a monospace block).
+    s = s.replace(/```[a-zA-Z0-9_+-]*\n?([\s\S]*?)```/g, function (_, code) {
+      return stash("<pre><code>" + code.replace(/\n$/, "") + "</code></pre>");
+    });
+
+    // Inline code spans.
+    s = s.replace(/`([^`\n]+)`/g, function (_, code) {
+      return stash("<code>" + code + "</code>");
+    });
+
+    // Markdown links: [text](https://...). target=_blank is safe even
+    // inside Television's embedded webview -- its Electron shell
+    // intercepts window-open requests for http(s) URLs and routes
+    // them to the OS default browser via shell.openExternal(), always
+    // denying the webview itself from navigating or opening a tab.
+    s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, function (_, text, url) {
+      return stash('<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + text + "</a>");
+    });
+
+    // Bare URLs not already captured above, with trailing punctuation
+    // (closing parens/quotes, sentence-ending periods) kept outside
+    // the link.
+    s = s.replace(/https?:\/\/[^\s<]+/g, function (m) {
+      var trail = "";
+      while (/[.,;:!?)'"]$/.test(m)) {
+        trail = m.slice(-1) + trail;
+        m = m.slice(0, -1);
+      }
+      if (!m) return m + trail;
+      return stash('<a href="' + m + '" target="_blank" rel="noopener noreferrer">' + m + "</a>") + trail;
+    });
+
+    // Bold, then italic (bold consumes ** pairs first so italic's
+    // single-* pattern can't split them apart).
+    s = s.replace(/\*\*([^\n*]+)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/(^|[^*])\*([^\n*]+)\*(?!\*)/g, "$1<em>$2</em>");
+
+    var restoreRe = new RegExp(PLACEHOLDER_MARK + "(\\d+)" + PLACEHOLDER_MARK, "g");
+    s = s.replace(restoreRe, function (_, i) {
+      return placeholders[i];
+    });
+
+    return s;
   }
 
   function addRow(ev) {
@@ -528,28 +754,15 @@
 
     var text = document.createElement("div");
     text.className = "text";
-    text.textContent = ev.text;
-
-    var copyBtn = document.createElement("button");
-    copyBtn.className = "copy-btn";
-    copyBtn.type = "button";
-    copyBtn.title = "Copy this message";
-    copyBtn.innerHTML = COPY_SVG;
-    copyBtn.addEventListener("click", function () {
-      navigator.clipboard.writeText(ev.text).then(function () {
-        copyBtn.classList.add("copied");
-        setTimeout(function () { copyBtn.classList.remove("copied"); }, 900);
-      }).catch(function () {});
-    });
+    text.innerHTML = markdownToHtml(ev.text);
 
     row.appendChild(tag);
     row.appendChild(text);
-    row.appendChild(copyBtn);
     logEl.appendChild(row);
   }
 
   function poll() {
-    fetch("/api/transcript?since=" + since)
+    fetch("/api/transcript?since=" + since + "&source=" + POLL_SOURCE)
       .then(function (r) {
         if (!r.ok) throw new Error("bad status " + r.status);
         return r.json();
@@ -580,6 +793,15 @@
         dotEl.className = "ok";
         if (data.idle) {
           showIdleView();
+          if (data.launch_failed && !lastReportedFailed) {
+            lastReportedFailed = true;
+            resetStartButton(
+              "Start failed — check logs/launcher-launch.log for what happened.");
+          } else if (startPending && startClickedAt !== null &&
+                     Date.now() - startClickedAt > START_TIMEOUT_MS) {
+            resetStartButton(
+              "Timed out waiting for the call to start — try again.");
+          }
           return;
         }
         showActiveView();
@@ -625,10 +847,11 @@
       });
   }
 
-  // The model buttons in the settings menu send the exact same phrases
-  // the voice console already recognizes ("switch to the deep model",
-  // etc.) through this same typed-input path — no new backend logic,
-  // it's structurally identical to typing the phrase yourself.
+  // The model/effort/voice buttons in the settings menu send the exact
+  // same phrases the voice console already recognizes ("switch to the
+  // deep model", "switch voice to hal", etc.) through this same
+  // typed-input path — no new backend logic, it's structurally
+  // identical to typing the phrase yourself.
   var modelBtns = document.querySelectorAll(".model-btn");
   for (var m = 0; m < modelBtns.length; m++) {
     modelBtns[m].addEventListener("click", function () {
@@ -652,9 +875,16 @@
 
     for (var i = 0; i < modelBtns.length; i++) {
       var btn = modelBtns[i];
-      var isActive = btn.hasAttribute("data-tier")
-        ? btn.getAttribute("data-tier") === state.tier
-        : btn.getAttribute("data-effort") === state.effort;
+      var isActive;
+      if (btn.hasAttribute("data-tier")) {
+        isActive = btn.getAttribute("data-tier") === state.tier;
+      } else if (btn.hasAttribute("data-effort")) {
+        isActive = btn.getAttribute("data-effort") === state.effort;
+      } else if (btn.hasAttribute("data-engine")) {
+        isActive = btn.getAttribute("data-engine") === (state.voice_mode || "cartesia");
+      } else {
+        isActive = btn.getAttribute("data-voice") === state.voice;
+      }
       btn.classList.toggle("active", isActive);
     }
 
@@ -663,8 +893,9 @@
     if (document.activeElement !== autoApproveToggle) {
       autoApproveToggle.checked = !!state.auto_approve;
     }
-    if (document.activeElement !== voiceLocalToggle) {
-      voiceLocalToggle.checked = state.voice_mode === "local";
+    if (document.activeElement !== volumeSlider && state.volume != null) {
+      volumeSlider.value = state.volume;
+      volumeValue.textContent = state.volume + "%";
     }
   }
 
@@ -686,9 +917,15 @@
     }
   });
 
-  voiceLocalToggle.addEventListener("change", function () {
-    postInput(voiceLocalToggle.checked
-      ? "switch to local voice" : "switch to cloud voice");
+  // "input" fires continuously while dragging -- update the live label
+  // only, no network call per pixel. "change" fires once on release,
+  // which is when the actual phrase goes out, same as every other
+  // settings-panel control.
+  volumeSlider.addEventListener("input", function () {
+    volumeValue.textContent = volumeSlider.value + "%";
+  });
+  volumeSlider.addEventListener("change", function () {
+    postInput("set volume to " + volumeSlider.value);
   });
 
   function autoGrow() {

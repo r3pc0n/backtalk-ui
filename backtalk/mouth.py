@@ -28,10 +28,11 @@ synth_stream). Cartesia needs no ffmpeg step — it hands back raw PCM
 directly in the format we ask for. The local-mode equivalent is Pocket
 TTS (kyutai-labs/pocket-tts) — CPU-only, no GPU contention, run as its
 own local HTTP server in its own venv (see _ensure_pocket) rather than
-imported into this one. A second local-GPU option, CSM (sesame/csm-1b
-via HuggingFace Transformers), sits below Pocket TTS and above Kokoro —
-parked as of 2026-09-01 (config default disabled) in favor of Pocket's
-consistent, non-stochastic delivery, but left in place for later.
+imported into this one. A second local-GPU option, Chatterbox-Turbo
+(Resemble AI), sits below Pocket TTS and above Kokoro — same
+arm's-length local-server pattern as Pocket TTS, its own isolated venv
+at ~/my-agent/chatterbox-tts (see _ensure_chatterbox). Replaces CSM as
+of 2026-09-03, retired outright rather than left parked.
 
 Sentences are synthesized one at a time and queued for playback, so the
 first sentence is audible while later ones are still rendering. Playback
@@ -65,21 +66,34 @@ from backtalk.vlog import log
 KOKORO_RATE = 24000
 EL_RATE = 44100
 CARTESIA_RATE = 44100
-CSM_RATE = 24000
+CHATTERBOX_RATE = 24000
 POCKET_RATE = 24000
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 
 _pipe = None
 _pipe_lock = threading.Lock()
 
-_csm_model = None
-_csm_processor = None
-_csm_reference = None      # cached voice-anchor conversation turn, or None
-_csm_lock = threading.Lock()
+_chatterbox_proc = None    # subprocess.Popen of chatterbox_server.py, or None
+_chatterbox_lock = threading.Lock()
 
 _pocket_proc = None        # subprocess.Popen of `pocket-tts serve`, or None
 _pocket_file_httpd = None  # localhost static file server for the voice, or None
 _pocket_lock = threading.Lock()
+
+
+def _apply_gain(pcm: np.ndarray) -> np.ndarray:
+    """Scale one int16 PCM block by CFG["volume"] (a percent, 100 =
+    unchanged). The one place this needs to happen: every engine's
+    audio passes through here on its way to the speaker (see
+    Mouth._play_stream), so a single multiply covers all of them.
+    Float32 round-trip + clip, not a raw int16 multiply, so a >100%
+    boost clips cleanly instead of wrapping into ugly digital
+    distortion."""
+    vol = CFG.get("volume", 100)
+    if vol == 100:
+        return pcm
+    gain = max(0.0, vol) / 100.0
+    return np.clip(pcm.astype(np.float32) * gain, -32768, 32767).astype(np.int16)
 
 
 def _ensure_espeak():
@@ -421,162 +435,149 @@ def _cartesia_ready() -> bool:
                 and _get_cartesia_key())
 
 
-def _ensure_csm():
-    """Lazy-load CSM (sesame/csm-1b) and its optional voice-anchor
-    reference — first call downloads the model from HF (gated; needs
-    `hf auth login` once) and puts it on GPU if available. Loaded under
-    a lock so concurrent sentences don't race the load."""
-    global _csm_model, _csm_processor, _csm_reference
-    with _csm_lock:
-        if _csm_model is None:
-            import torch
-            from transformers import AutoProcessor, CsmForConditionalGeneration
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            log(f"[mouth] loading CSM (device {device})...")
-            _csm_processor = AutoProcessor.from_pretrained("sesame/csm-1b")
-            _csm_model = CsmForConditionalGeneration.from_pretrained(
-                "sesame/csm-1b", device_map=device)
-            log("[mouth] CSM ready")
-            ref_path = CFG["csm"].get("reference_audio") or ""
-            if ref_path:
-                _csm_reference = {
-                    "role": str(CFG["csm"]["speaker"]),
-                    "content": [
-                        {"type": "text",
-                         "text": CFG["csm"].get("reference_text") or ""},
-                        {"type": "audio", "path": ref_path},
-                    ],
-                }
-                log(f"[mouth] CSM voice reference loaded from {ref_path}")
-    return _csm_model, _csm_processor
-
-
-def _stream_csm(text: str):
-    """CSM -> int16 PCM chunks at CSM_RATE, released as generation goes
-    instead of waiting for the whole sentence. Raises on any failure;
-    synth_stream's except clause is what falls back to Kokoro, same as
-    the other engines.
-
-    CSM's generate() calls streamer.put() once per ~80ms audio FRAME
-    (codebook tokens), from inside its own sampling loop -- see
-    transformers.models.csm.generation_csm.CsmGenerationMixin._sample.
-    That's the real hook. Turning frames into audio incrementally is
-    the part transformers doesn't give us for free: Mimi's decoder
-    TRANSFORMER supports genuine incremental attention caching across
-    decode() calls, but its final conv upsampling stack has no
-    cross-call state at all -- every decode() call runs those causal
-    convolutions as if preceded by silence. _CsmAudioStreamer below
-    works around that the standard way for a codec with no exposed
-    conv cache: each chunk re-decodes a small window of already-
-    decoded trailing context plus the new frames, and keeps only the
-    newly-decoded tail -- the context's own output is recomputed only
-    to prime the convolutions with real history, then thrown away."""
-    import queue as _queue
-    import threading as _threading
-
-    import torch
-    from transformers.generation.streamers import BaseStreamer
-
-    cfg = CFG["csm"]
-    model, processor = _ensure_csm()
-    speaker = str(cfg["speaker"])
-    conversation = []
-    if _csm_reference is not None:
-        conversation.append(_csm_reference)
-    conversation.append({"role": speaker, "content": [{"type": "text", "text": text}]})
-    inputs = processor.apply_chat_template(
-        conversation, tokenize=True, return_dict=True).to(model.device)
-    # Mimi codec runs at 12.5Hz -> 80ms/token.
-    max_new_tokens = max(1, int(cfg["max_audio_length_ms"]) // 80)
-
-    class _CsmAudioStreamer(BaseStreamer):
-        CHUNK_FRAMES = 8      # ~640ms of new audio released per chunk
-        CONTEXT_FRAMES = 4    # trailing frames re-fed to prime the conv decoder
-
-        def __init__(self, codec_model, eos_id, num_codebooks):
-            self.codec_model = codec_model
-            self.eos_id = eos_id
-            self.num_codebooks = num_codebooks
-            self.queue: _queue.Queue = _queue.Queue()
-            self._frames: list = []
-            self._decoded_through = 0
-
-        def put(self, value):
-            # generate()'s base machinery also calls streamer.put(input_ids)
-            # once for the whole prompt before our per-frame pushes ever
-            # start (transformers/generation/utils.py, the plain prompt
-            # echo every streamer gets) -- that push is shaped (batch,
-            # prompt_len), nothing like a single codebook frame, so it has
-            # to be filtered out here rather than assumed away.
-            if value.dim() != 2 or value.shape[-1] != self.num_codebooks:
-                return
-            frame = value[0]      # batch size is always 1 here
-            if bool((frame == self.eos_id).all()):
-                return             # the EOS frame itself carries no audio
-            self._frames.append(frame)
-            if len(self._frames) - self._decoded_through >= self.CHUNK_FRAMES:
-                self._flush()
-
-        def end(self):
-            self._flush()
-            self.queue.put(None)
-
-        def _flush(self):
-            new_count = len(self._frames) - self._decoded_through
-            if new_count <= 0:
-                return
-            ctx_start = max(0, self._decoded_through - self.CONTEXT_FRAMES)
-            window = self._frames[ctx_start:]
-            # generate()'s own loop pushes streamer.put(next_tokens.cpu())
-            # (see the docstring above), so window's frames are CPU
-            # tensors -- move back to the codec's device before decoding.
-            codes = torch.stack(window, dim=0).transpose(0, 1).unsqueeze(0).to(model.device)
-            with torch.no_grad():
-                out = self.codec_model.decode(audio_codes=codes, return_dict=True)
-            audio = out.audio_values[0, 0]
-            per_frame = audio.shape[-1] / len(window)
-            drop = round((self._decoded_through - ctx_start) * per_frame)
-            new_audio = audio[drop:]
-            self._decoded_through = len(self._frames)
-            if new_audio.numel():
-                self.queue.put(new_audio.detach().cpu().numpy())
-
-    streamer = _CsmAudioStreamer(model.codec_model, model.config.codebook_eos_token_id,
-                                  model.config.num_codebooks)
-    errors: list = []
-
-    def _run():
-        try:
-            with torch.no_grad():
-                model.generate(
-                    **inputs,
-                    output_audio=False,   # we decode incrementally ourselves
-                    max_new_tokens=max_new_tokens,
-                    do_sample=True,
-                    temperature=float(cfg["temperature"]),
-                    top_k=int(cfg["topk"]),
-                    streamer=streamer,
-                )
-            # success: generate() already called streamer.end() for us
-        except Exception as e:
-            errors.append(e)
-            streamer.queue.put(None)   # unblock the consumer below
-        finally:
-            torch.cuda.empty_cache()  # release fragmented cache; VRAM margin here is thin
-
-    t = _threading.Thread(target=_run, daemon=True)
-    t.start()
+def _chatterbox_server_healthy(base_url: str) -> bool:
+    import httpx
     try:
-        while True:
-            chunk = streamer.queue.get()
-            if chunk is None:
-                break
-            audio_array = np.clip(chunk, -1.0, 1.0)
-            yield (audio_array * 32767).astype(np.int16)
-    finally:
-        t.join()
-    if errors:
-        raise errors[0]
+        return httpx.get(f"{base_url}/health", timeout=1.0).status_code == 200
+    except Exception:
+        return False
+
+
+def _ensure_chatterbox():
+    """Lazy-start Chatterbox's local HTTP server -- its own process, in
+    its own venv (chatterbox-tts/.venv), never imported into this one.
+    Chatterbox pins torch==2.6.0; this venv runs 2.13.0+cu130, and
+    mixing them risks exactly the transitive dependency regression that
+    already happened once (see backtalk.md's setuptools incident) and
+    again while THIS install was being set up (see the vault's
+    Chatterbox TTS Engine note). Same arm's-length shape as
+    _ensure_pocket, just with a hand-written server (Chatterbox ships
+    no CLI/serve command the way pocket-tts does) — see
+    chatterbox-tts/chatterbox_server.py.
+
+    Replaces CSM as of 2026-09-03: CSM ran in-process (imported straight
+    into this venv) rather than arm's-length, which is exactly the
+    pattern this avoids. Retired outright per Des's call, not left
+    parked.
+
+    Swapped from Chatterbox-Turbo to the full model, same day, after a
+    live head-to-head: VRAM difference measured negligible (~3.3GB vs
+    ~3.4GB), but the full model exposes exaggeration/cfg_weight for
+    tuning, which Turbo silently ignores. exaggeration is baked into
+    voice conditioning at server startup (a restart is needed to change
+    it); cfg_weight applies per-call so it's cheaper to retune, though
+    this server still bakes it in at launch for simplicity — see
+    chatterbox_server.py."""
+    import subprocess
+    import time
+    from pathlib import Path
+
+    global _chatterbox_proc
+    with _chatterbox_lock:
+        cfg = CFG["chatterbox"]
+        repo_root = Path(__file__).resolve().parents[1]
+        venv_python = cfg.get("python") or str(
+            repo_root.parent / "chatterbox-tts" / ".venv" / "bin" / "python")
+        server_script = cfg.get("server_script") or str(
+            repo_root.parent / "chatterbox-tts" / "chatterbox_server.py")
+        if not Path(venv_python).exists():
+            raise RuntimeError(
+                f"chatterbox venv python not found at {venv_python} — "
+                f"set up ~/my-agent/chatterbox-tts/.venv or set chatterbox.python")
+
+        ref_path = cfg.get("reference_audio") or ""
+        if not ref_path:
+            raise RuntimeError("chatterbox.reference_audio not set")
+
+        base_url = cfg["url"].rstrip("/")
+        if not _chatterbox_server_healthy(base_url):
+            port = base_url.rsplit(":", 1)[-1]
+            log(f"[mouth] starting chatterbox server on port {port}...")
+            log_path = repo_root / "logs" / "chatterbox.log"
+            log_path.parent.mkdir(exist_ok=True)
+            # Read fresh off disk, not from the in-memory CFG global --
+            # CFG is loaded once at process start and _write_config_key
+            # is the only thing that ever mutates it live, which these
+            # two keys never go through (there's no console verb for
+            # them). Without this, tuning exaggeration/cfg_weight in
+            # backtalk.json would silently do nothing until the whole
+            # backtalk process restarts, defeating the point of tuning
+            # without a restart. The subprocess itself already relaunches
+            # fresh on every call here, so this just makes sure it
+            # launches with the CURRENT values, not stale ones frozen at
+            # import time.
+            try:
+                import json as _json
+                from backtalk.config import CONFIG_PATH as _CONFIG_PATH
+                _live_cfg = _json.loads(_CONFIG_PATH.read_text()).get("chatterbox", {})
+            except Exception:
+                _live_cfg = {}
+            exaggeration = str(_live_cfg.get("exaggeration", cfg.get("exaggeration", 0.5)))
+            cfg_weight = str(_live_cfg.get("cfg_weight", cfg.get("cfg_weight", 0.5)))
+            with open(log_path, "ab") as logf:
+                _chatterbox_proc = subprocess.Popen(
+                    [venv_python, server_script, "--port", port, "--voice", ref_path,
+                     "--exaggeration", exaggeration, "--cfg-weight", cfg_weight],
+                    stdout=logf, stderr=subprocess.STDOUT)
+            # Longer budget than pocket's 30s -- first-ever launch also
+            # downloads model weights, not just loads them from disk.
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                if _chatterbox_server_healthy(base_url):
+                    break
+                time.sleep(0.5)
+            else:
+                raise RuntimeError(
+                    f"chatterbox server did not become healthy within 60s "
+                    f"(see {log_path})")
+            log("[mouth] chatterbox ready")
+
+
+def _shutdown_chatterbox():
+    """Tear down what _ensure_chatterbox started, so backtalk exiting
+    doesn't leave an orphaned chatterbox server (and its GPU memory)
+    behind -- same reasoning as _shutdown_pocket."""
+    import subprocess
+    global _chatterbox_proc
+    with _chatterbox_lock:
+        if _chatterbox_proc is not None:
+            _chatterbox_proc.terminate()
+            try:
+                _chatterbox_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _chatterbox_proc.kill()
+            _chatterbox_proc = None
+
+
+def _stream_chatterbox(text: str):
+    """Chatterbox -> int16 PCM at CHATTERBOX_RATE. Blocks until the
+    whole sentence is rendered server-side then returns it as one
+    chunk -- the library exposes no token-streaming generate() the way
+    Pocket TTS does, so there's no incremental-release benefit to
+    chase here, unlike _stream_pocket. Same WAV-response parsing
+    (skip past the "data" subchunk marker) either way.
+
+    voice resolves fresh from CFG on every call, same pattern
+    _stream_pocket already uses for CFG["pocket"]["voice"] -- a
+    character switch takes effect on the very next sentence, no
+    restart. The server caches each character's conditioning after
+    first use (see chatterbox_server.py's _conds_for)."""
+    import httpx
+
+    cfg = CFG["chatterbox"]
+    _ensure_chatterbox()
+    base_url = cfg["url"].rstrip("/")
+    voice = cfg.get("voice", "samantha")
+    r = httpx.post(f"{base_url}/tts", data={"text": text, "voice": voice}, timeout=60.0)
+    r.raise_for_status()
+    data = r.content
+    idx = data.find(b"data")
+    if idx == -1 or len(data) < idx + 8:
+        raise RuntimeError("chatterbox response missing WAV data chunk")
+    pcm = data[idx + 8:]
+    usable = len(pcm) - (len(pcm) % 2)
+    if usable:
+        yield np.frombuffer(pcm[:usable], dtype=np.int16)
 
 
 def _pocket_server_healthy(base_url: str) -> bool:
@@ -739,13 +740,15 @@ def _stream_pocket(text: str):
 
 def synth_stream(text: str, timeout: float = 30.0):
     """One sentence -> yields (sample_rate, pcm_chunk) as the TTS
-    renders. voice_mode is the explicit switch (the voice console's
-    "switch to local/cloud voice"): "cloud" (the default) tries
-    Cartesia then ElevenLabs; "local" tries Pocket TTS, then CSM (if
-    enabled — parked/disabled by default as of 2026-09-01), skipping
-    both cloud engines entirely. Kokoro is always the final fallback,
-    on ANY failure in either mode. Degrade, never mute."""
-    if CFG.get("voice_mode", "cloud") == "local":
+    renders. voice_mode is the explicit three-way switch (the voice
+    console's "switch to cartesia/pocket/chatterbox voice"): "cartesia"
+    (the default) tries Cartesia then ElevenLabs; "pocket" tries Pocket
+    TTS only; "chatterbox" tries Chatterbox only — no crossover between
+    the three, picking one means getting that one. Kokoro is always the
+    silent final fallback, on ANY failure in any mode (or if the
+    selected engine's config block is disabled). Degrade, never mute."""
+    mode = CFG.get("voice_mode", "cartesia")
+    if mode == "pocket":
         if CFG.get("pocket", {}).get("enabled"):
             try:
                 for pcm in _stream_pocket(text):
@@ -754,14 +757,21 @@ def synth_stream(text: str, timeout: float = 30.0):
             except Exception as e:
                 log(f"[mouth] pocket failed ({str(e)[:60]}) — "
                     f"falling back to {CFG['voice']}")
-        if CFG.get("csm", {}).get("enabled"):
+        else:
+            log("[mouth] pocket selected but disabled — "
+                f"falling back to {CFG['voice']}")
+    elif mode == "chatterbox":
+        if CFG.get("chatterbox", {}).get("enabled"):
             try:
-                for pcm in _stream_csm(text):
-                    yield CSM_RATE, pcm
+                for pcm in _stream_chatterbox(text):
+                    yield CHATTERBOX_RATE, pcm
                 return
             except Exception as e:
-                log(f"[mouth] csm failed ({str(e)[:60]}) — "
+                log(f"[mouth] chatterbox failed ({str(e)[:60]}) — "
                     f"falling back to {CFG['voice']}")
+        else:
+            log("[mouth] chatterbox selected but disabled — "
+                f"falling back to {CFG['voice']}")
     else:
         if _cartesia_ready():
             try:
@@ -833,6 +843,7 @@ class Mouth:
         self.shut_up()
         self.ducker.restore_now()
         _shutdown_pocket()
+        _shutdown_chatterbox()
 
     def wait_done(self, timeout: float | None = None):
         """Block until the queue is drained and playback finished."""
@@ -948,13 +959,14 @@ class Mouth:
                 for i in range(0, len(pcm), block):
                     if self._stop.is_set():
                         return False
-                    out.write(pcm[i:i + block])
+                    chunk = _apply_gain(pcm[i:i + block])
+                    out.write(chunk)
                     # Re-check after the blocking write: a barge-in
                     # landing mid-block must not let feed_waveform
                     # re-assert "speaking" over a fresh "listening".
                     if self._stop.is_set():
                         return False
-                    signals.feed_waveform(pcm[i:i + block])
+                    signals.feed_waveform(chunk)
                 return True
             for pcm in head:
                 if not _write(pcm):

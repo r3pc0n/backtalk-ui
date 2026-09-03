@@ -170,14 +170,24 @@ DEFAULTS = {
     # mouth._get_elevenlabs_key for the seeding one-liners. Kokoro
     # remains the automatic fallback, so the voice degrades instead of
     # going mute if the cloud fails. Needs ffmpeg on the PATH.
-    # Which family of premium voice the console command controls:
-    # "cloud" (default) tries Cartesia then ElevenLabs; "local" tries
-    # CSM instead, skipping both cloud engines entirely. Kokoro is
-    # always the final fallback either way (see mouth.synth_stream).
-    # Never hand-edit this to switch: say "switch to local voice" or
-    # "switch to cloud voice" in a voice session (the switch saves
-    # itself here, same as mic_mode/permission_mode).
-    "voice_mode": "cloud",
+    # Which TTS engine speaks, an explicit three-way pick, no crossover
+    # between them: "cartesia" (default) tries Cartesia then ElevenLabs;
+    # "pocket" tries Pocket TTS only; "chatterbox" tries Chatterbox
+    # only. Kokoro is always the silent last-resort fallback if the
+    # selected engine fails or is disabled (see mouth.synth_stream).
+    # Never hand-edit this to switch: say "switch to cartesia voice",
+    # "switch to pocket voice", or "switch to chatterbox voice" in a
+    # voice session (the switch saves itself here, same as
+    # mic_mode/permission_mode).
+    "voice_mode": "cartesia",
+    # Output gain, as a percent, applied to every engine's audio right
+    # before it reaches the speaker (see mouth.Mouth._play_stream) --
+    # 100 is unchanged/passthrough. Above 100 boosts (clipped so it
+    # can't wrap/distort), letting a quiet voice get louder without
+    # touching the system mixer. Never hand-edit this to switch: say
+    # "set volume to N" in a voice session (the switch saves itself
+    # here, same as mic_mode/permission_mode).
+    "volume": 100,
     "elevenlabs": {
         "enabled": False,
         "voice_id": "",
@@ -219,14 +229,14 @@ DEFAULTS = {
         # seeding a second copy of the same secret.
         "key_slot": "backtalk-cartesia",
     },
-    # Optional local voice, tried BEFORE csm below in "local" voice_mode:
-    # Pocket TTS (kyutai-labs/pocket-tts), CPU-only, no GPU contention.
-    # Runs as its own local HTTP server in its OWN venv (mouth
-    # ._ensure_pocket starts/stops it) rather than as a dependency of
-    # this one — its CPU-only torch would otherwise fight backtalk's
-    # GPU-torch venv the same way the CSM install once did (see
-    # backtalk.md's setuptools incident). Falls back to csm (if
-    # enabled) then Kokoro on any failure — mouth.synth_stream.
+    # Optional local voice, selected via voice_mode="pocket": Pocket TTS
+    # (kyutai-labs/pocket-tts), CPU-only, no GPU contention. Runs as its
+    # own local HTTP server in its OWN venv (mouth._ensure_pocket
+    # starts/stops it) rather than as a dependency of this one — its
+    # CPU-only torch would otherwise fight backtalk's GPU-torch venv the
+    # same way an in-process install once did (see backtalk.md's
+    # setuptools incident). Falls back to Kokoro on any failure, no
+    # crossover to chatterbox — mouth.synth_stream.
     "pocket": {
         "enabled": False,
         # Base URL of a `pocket-tts serve` instance. mouth._ensure_pocket
@@ -252,37 +262,63 @@ DEFAULTS = {
         # URL for the exported .safetensors — see mouth._ensure_pocket.
         "file_port": 8126,
     },
-    # Optional local voice, alternative to Kokoro: CSM (sesame/csm-1b) via
-    # HuggingFace Transformers, in-process on your own GPU. No API key, no
-    # network per request — but it's a ~1B-parameter model, so it wants
-    # CUDA (slow on CPU) and needs `hf auth login` once to accept the
-    # gated model. Sits BELOW pocket above and ABOVE Kokoro in
-    # mouth.synth_stream: tried only when pocket is disabled or fails,
-    # falls back to Kokoro on any load or generation failure. Loaded
-    # lazily on first use (not at warm()), so enabling this costs
-    # nothing until the first sentence actually needs it. Parked as of
-    # 2026-09-01 (disabled by default) in favor of Pocket TTS's more
-    # consistent, non-stochastic delivery — see backtalk.md.
-    "csm": {
+    # Optional local voice, selected via voice_mode="chatterbox": the
+    # full Chatterbox model (Resemble AI), its own isolated venv at
+    # ~/my-agent/chatterbox-tts, run as its own local HTTP server
+    # (mouth._ensure_chatterbox starts/stops it) — same arm's-length
+    # pattern as pocket above, for the same reason: Chatterbox pins
+    # torch==2.6.0, this venv runs a different torch, and importing it
+    # directly here risks the exact transitive dependency regression
+    # that already happened once (see backtalk.md's setuptools
+    # incident). Falls back to Kokoro on any failure, no crossover to
+    # pocket — mouth.synth_stream. Replaces CSM as of 2026-09-03
+    # (retired outright, not left parked) — see the vault's Chatterbox
+    # TTS Engine note for the full build history.
+    #
+    # Swapped from Chatterbox-Turbo to the full model, same day: a live
+    # head-to-head measured the VRAM cost as basically identical
+    # (~3.3GB vs ~3.4GB), and the full model exposes exaggeration/
+    # cfg_weight for tuning, which Turbo silently ignores. Costs ~1.9x
+    # generate() latency (measured 2.49s vs 1.32s for a ~7s utterance).
+    "chatterbox": {
         "enabled": False,
-        # Which of csm-1b's speaker identities to use.
-        "speaker": 0,
-        # Hard cap on one utterance's generated audio, converted to a
-        # token budget via the Mimi codec's 12.5Hz frame rate (80ms/token).
-        "max_audio_length_ms": 15000,
-        "temperature": 0.9,
-        "topk": 50,
-        # Optional voice anchor: a short audio file (any format ffmpeg/
-        # torchaudio reads) of the target voice speaking. Passed as the
-        # first turn of the generation conversation so every utterance is
-        # conditioned on it instead of a random voice each time. Loaded
-        # once and cached (mouth._ensure_csm) -- swapping the file needs a
-        # process restart. "" disables it.
+        # Base URL of a chatterbox_server.py instance. mouth
+        # ._ensure_chatterbox starts one at this address if nothing's
+        # already listening there.
+        "url": "http://localhost:8130/",
+        # Path to the chatterbox venv's python and the server script.
+        # "" -> looks next to this repo, at
+        # ../chatterbox-tts/.venv/bin/python and
+        # ../chatterbox-tts/chatterbox_server.py.
+        "python": "",
+        "server_script": "",
+        # Voice cloning source for the DEFAULT character: a short
+        # reference clip (any format ffmpeg/librosa reads, 5s+). Loaded
+        # eagerly at server startup and cached (prepare_conditionals) —
+        # NOT re-embedded per sentence, unlike a naive per-request
+        # upload would be (measured ~4s extra per sentence without this;
+        # see the vault note). "" means enabling this will fail loudly.
         "reference_audio": "",
-        # The reference_audio's transcript. Optional -- CSM tolerates an
-        # empty string, but pairing the audio with what it actually says
-        # anchors prosody more reliably than the bare clip alone.
-        "reference_text": "",
+        # Which character speaks — resolved fresh on every call (same
+        # pattern as pocket.voice) against a sibling
+        # "<name>-reference.wav" next to reference_audio above. The
+        # server computes and caches that character's conditioning on
+        # first use (~0.4s), then reuses it — see chatterbox_server.py's
+        # _conds_for. Falls back to the default character server-side
+        # if a name has no reference clip yet, not an error.
+        "voice": "samantha",
+        # Emotional intensity, baked into voice conditioning at server
+        # startup. _ensure_chatterbox only launches a new server when
+        # none is already answering healthy on chatterbox.url — editing
+        # this value does NOT retune an already-running server; kill
+        # the chatterbox_server.py process (or restart backtalk) so the
+        # next call relaunches it with the new value. 0.5 is the
+        # library's own default.
+        "exaggeration": 0.5,
+        # Classifier-free guidance weight, applied per generate() call.
+        # Also baked in at server launch for simplicity (see
+        # chatterbox_server.py) — same restart caveat as exaggeration.
+        "cfg_weight": 0.5,
     },
     # Where the signal-bus files are written (.voice_state,
     # .voice_waveform, .voice_loading_pid) — anything can watch them;
