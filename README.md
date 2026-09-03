@@ -1,6 +1,6 @@
 # backtalk-ui
 
-> A fork of [Jared Rhodenizer's backtalk](https://github.com/jaredrhod/backtalk) — full credit and thanks to him for the original. This fork keeps the same core (hold a key, talk to your Claude Code agent, hear it answer) and changes how you pick and configure voices: an explicit Local/Cloud engine choice instead of a fixed pair, config-driven custom voice characters instead of hardcoded ones, and a bundled theme picker for the transcript UI. See **Credits** and **License** below — this stays AGPL-3.0-or-later, same as the original.
+> **Aimed mainly at people already running [Jared Rhodenizer](https://jaredrhod.com)'s full stack** ([fullstack-agent](https://github.com/jaredrhod/fullstack-agent): memory, voice, face, hands) who want a different voice interface than stock backtalk — an explicit Local/Cloud engine choice instead of a fixed pair, config-driven custom voice characters instead of hardcoded ones, and a bundled theme picker for the transcript UI. Worth being upfront about what this actually is: under the hood it's the **complete, independent backtalk application**, not a small patch — full credit and thanks to Jared for the original, and it stays AGPL-3.0-or-later, same as his. See **Install** below for how to swap it in without redoing your existing setup, and **Credits**/**License** for the rest.
 
 **Runs on:** Claude Code only; the voice is built on Claude's agent SDK. The $20 Pro plan is enough.
 
@@ -22,15 +22,38 @@ The hearing and the built-in voice run local: free, offline models on your machi
 
 ## Install
 
+### Already running the full Jarvis stack (fullstack-agent)?
+
+This swaps `backtalk-ui` in for stock backtalk, keeping your memory, face, and hands untouched, and keeping `fullstack-agent/update.sh`'s "update everything" working correctly. Hang up any active call first — do this with backtalk not running:
+
+```
+mv backtalk backtalk.old              # from your agent's home folder
+git clone https://github.com/r3pc0n/backtalk-ui backtalk
+cp backtalk.old/backtalk.json backtalk/backtalk.json
+cd backtalk && ./install.sh
+```
+
+Then confirm it (all good, nothing to change if you cloned exactly as above):
+
+```
+git -C backtalk remote -v
+```
+
+Should show only `origin` → `backtalk-ui`. **Don't add an `upstream` remote pointing at Jared's original backtalk** if you ever set one up for reference — `fullstack-agent/update.sh` specifically prefers `upstream` over `origin` when both exist (it's built for tracking a *real* upstream project from a private backup fork), so an `upstream` remote here would make "update everything" quietly pull Jared's stock backtalk back over this fork's changes. Just `origin` is correct and exactly what a plain clone gives you.
+
+Once you've confirmed it works, `rm -rf backtalk.old`.
+
+### Starting fresh (no existing backtalk install)
+
 ```
 git clone https://github.com/r3pc0n/backtalk-ui
 cd backtalk-ui
 ./install.sh
 ```
 
-The installer sets up a Python environment, the local speech-to-text and voice models, and the one system library they need. First run downloads the models (about 1 GB total); everything after is instant. Prerequisites: [Claude Code](https://claude.com/claude-code) with a Claude subscription, and `uv` (the installer offers to install it).
+Either way, the installer sets up a Python environment, the local speech-to-text and voice models, and the one system library they need. First run downloads the models (about 1 GB total); everything after is instant. Prerequisites: [Claude Code](https://claude.com/claude-code) with a Claude subscription, and `uv` (the installer offers to install it).
 
-**The easy way to configure it:** open this folder in Claude Code and say *"read backtalk.md and set me up."*
+**The easy way to configure it:** open the folder in Claude Code and say *"read backtalk.md and set me up."*
 
 **The manual way:** copy `backtalk.json.example` to `backtalk.json` (your copy is untracked, so updates never touch it), then edit it. Point `agent_dir` at the folder whose CLAUDE.md is your agent, set `name` to your agent's name, pick a `ptt_key`. Then:
 
