@@ -108,6 +108,10 @@ The transcript page ships with **Solitude** as its default theme — picked deli
 
 This fork doesn't include any automatic desktop-theme sync (an earlier build had one wired to a specific personal setup — not something that would have worked for anyone else, so it was left out rather than shipped broken). If you want your transcript page to follow your actual desktop theme live, that's a build-it-yourself project for now.
 
+**Where these come from.** All 29 presets, Solitude included, are [Omarchy](https://github.com/omacom/omarchy)'s own bundled desktop themes (MIT licensed) — the colors are pulled directly from Omarchy, not invented for this project, which is exactly why the names are kept as Omarchy's own rather than renamed. Several of those names — Catppuccin, Everforest, Flexoki, Gruvbox, Kanagawa, Nord, Rosé Pine, Tokyo Night — are themselves well-known, independently-authored open-source color schemes that predate Omarchy and that Omarchy itself packages; full credit to whoever originated each of those. If you maintain one of them and want a more specific credit here, open an issue.
+
+**Tested so far only on Omarchy (Hyprland).** The theme picker itself is plain CSS running in a browser, so it should render identically regardless of OS — that's not really a platform risk. What's actually unverified on Windows, Ubuntu, and Debian is the rest of the app: push-to-talk (evdev on Linux, falls back to pynput elsewhere) and `install.sh` specifically. Reports from other setups are welcome.
+
 ## Give it a face (optional)
 
 backtalk-ui writes tiny state files while it listens, thinks, and speaks, so anything can watch them and react in real time.
