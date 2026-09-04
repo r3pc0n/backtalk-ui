@@ -8,6 +8,12 @@ Talk to your Claude Code agent out loud. Hold a key, say the thing, and it answe
 
 The hearing and the built-in voice run local: free, offline models on your machine, no voice API keys required, no per-word costs. The brain is the Claude Code you already have — talking works like any other session and uses your plan's usage, nothing extra to buy.
 
+**What you actually get** — the transcript page, Solitude default theme, plain browser tab, nothing else added:
+
+![backtalk-ui's transcript page, default Solitude theme, running in an ordinary browser tab](docs/images/stock-demo.gif)
+
+*Demoed on Omarchy — that's my only test hardware right now, not yet verified on Debian, Ubuntu, or Windows. See **Theming** below for what that does and doesn't affect.*
+
 ## What it does
 
 - **Hold a key, talk, release.** Your words are transcribed locally and handed to a live Claude Code session. The reply is spoken sentence by sentence as it's generated, with first audio in about 1 to 2 seconds on warm turns. Prefer no button at all? **Hands-free listening** is one spoken sentence away ("go hands free"), and the key keeps working there as your interrupt.
@@ -129,6 +135,16 @@ This fork doesn't include any automatic desktop-theme sync (an earlier build had
 **Where these come from.** All 29 presets, Solitude included, are [Omarchy](https://github.com/omacom/omarchy)'s own bundled desktop themes (MIT licensed) — the colors are pulled directly from Omarchy, not invented for this project, which is exactly why the names are kept as Omarchy's own rather than renamed. Several of those names — Catppuccin, Everforest, Flexoki, Gruvbox, Kanagawa, Nord, Rosé Pine, Tokyo Night — are themselves well-known, independently-authored open-source color schemes that predate Omarchy and that Omarchy itself packages; full credit to whoever originated each of those. If you maintain one of them and want a more specific credit here, open an issue.
 
 **Tested so far only on Omarchy (Hyprland).** The theme picker itself is plain CSS running in a browser, so it should render identically regardless of OS — that's not really a platform risk. What's actually unverified on Windows, Ubuntu, and Debian is the rest of the app: push-to-talk (evdev on Linux, falls back to pynput elsewhere) and `install.sh` specifically. Reports from other setups are welcome.
+
+### Styled up
+
+![Des's personal desktop, with the backtalk-ui transcript page and other tools running as themed windows inside Television](docs/images/styled-showcase.png)
+
+<!-- TODO: replace with a real screenshot/GIF of the personal setup described
+     below. Caption text already reflects what it'll show; update only if the
+     actual setup differs from this description once captured. -->
+
+**This is my own personal setup, not something `backtalk-ui` includes.** The window it's running in isn't a plain browser tab — it's Television <!-- TODO: link/describe Television here, this is your own separate tool, not part of backtalk-ui or Jared's stack — I don't actually know if it's public, don't want to guess -->, a separate tool of mine that hosts web pages like this one as themed, chrome-managed windows on an Omarchy desktop, plus a custom Omarchy theme on top of that. None of that ships with `backtalk-ui` or is required to use it — what you get out of the box is the plain browser tab shown at the top of this README. This is here to show what's *possible* building on top of it, not what to expect on install.
 
 ## Give it a face (optional)
 
