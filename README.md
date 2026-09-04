@@ -138,13 +138,16 @@ This fork doesn't include any automatic desktop-theme sync (an earlier build had
 
 ### Styled up
 
-![Des's personal desktop, with the backtalk-ui transcript page and other tools running as themed windows inside Television](docs/images/styled-showcase.png)
+![Des's personal desktop: a custom-themed Television UI hosting the backtalk transcript, the ai-visualizer radial face, and his own Vault Graph tool as separate windows](docs/images/styled-showcase.gif)
 
-<!-- TODO: replace with a real screenshot/GIF of the personal setup described
-     below. Caption text already reflects what it'll show; update only if the
-     actual setup differs from this description once captured. -->
+**This is my own personal setup, not something `backtalk-ui` includes.** What's actually on screen:
 
-**This is my own personal setup, not something `backtalk-ui` includes.** The window it's running in isn't a plain browser tab — it's Television <!-- TODO: link/describe Television here, this is your own separate tool, not part of backtalk-ui or Jared's stack — I don't actually know if it's public, don't want to guess -->, a separate tool of mine that hosts web pages like this one as themed, chrome-managed windows on an Omarchy desktop, plus a custom Omarchy theme on top of that. None of that ships with `backtalk-ui` or is required to use it — what you get out of the box is the plain browser tab shown at the top of this README. This is here to show what's *possible* building on top of it, not what to expect on install.
+- **[Television](https://television.run/)** hosts these pages as themed, chrome-managed windows on an Omarchy desktop — a third-party tool, not mine. I've themed and customized my own instance of it, but didn't build it; full credit to its actual creators. Neither Television nor my theming of it ships with `backtalk-ui`.
+- **The radial face** is [ai-visualizer](https://github.com/jaredrhod/ai-visualizer), Jared's own project (see **Give it a face** below) — a separate optional piece, not part of this fork either.
+- **Vault Graph** is my own personal tool, unrelated to backtalk-ui, Jared's stack, or Television.
+- **The transcript itself is further customized beyond what `backtalk-ui` ships** — I've added my own character voices and providers to `CFG["voices"]` and my own `backtalk.json`, which is exactly the config-driven customization this fork is built to support, just not something that comes populated by default.
+
+What you get out of the box is the plain browser tab and empty voice roster shown at the top of this README. This section exists to show what's *possible* building on top of it, not what to expect on install.
 
 ## Give it a face (optional)
 

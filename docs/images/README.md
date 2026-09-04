@@ -1,22 +1,17 @@
-# README media — what's needed
+# README media
 
-Two placeholders in the main `README.md`, both referenced by relative path from repo root:
+Both slots filled, real captures, both referenced by relative path from repo root in the main `README.md`.
 
-## `stock-demo.gif` (or `.png`)
+## `stock-demo.gif` — done
 
-The "what you actually get" hero image, right after the intro. Needs to show:
+The "what you actually get" hero image, right after the intro. 800×450, 31s, 2.1MB — converted from a real screen recording via a two-pass palette-optimized `ffmpeg` pass (`palettegen`/`paletteuse`, meaningfully better quality than a naive single-pass encode). Shows the transcript page's default state (Solitude theme, nothing switched) in a plain browser tab — this one has to keep matching a plain `git clone` + `./install.sh` result exactly, since it's the "here's what you actually get" promise. Recorded on Omarchy (the only test hardware available), captioned as such in the README.
 
-- The transcript page's **default state** — Solitude theme, nothing switched.
-- A **plain browser tab**, no window manager chrome, no Television, no custom desktop theme around it.
-- Ideally a short GIF of an actual exchange (hold key, talk, see the reply appear) rather than a static screenshot — more convincing that it's real and working, and GitHub autoplays GIFs inline with no click needed.
+## `styled-showcase.gif` — done
 
-This is the "here's what a plain `git clone` gets you" image — it has to match that exactly, or it's misleading in the same way the whole point of the two-section split was meant to avoid.
+The "Styled up" section, after Theming. 760px wide, 8fps, 6.8MB (down from an unreduced 14.7MB at the source's native settings — GIF compression handles this busier, more colorful desktop scene far less efficiently than the flat stock-demo UI, so more aggressive settings were needed to keep the file size reasonable without losing legibility). Shows Des's real personal setup — Television hosting the backtalk transcript, ai-visualizer's radial face, and his own Vault Graph tool as separate themed windows, plus his own further-customized transcript with real character voices added. The README text right below it explains what's actually shown and that none of it ships by default.
 
-## `styled-showcase.png` (or `.gif`)
+## If either ever needs recapturing
 
-The "Styled up" section, after Theming. This one's allowed to actually be Des's real, customized setup — Television-hosted windows, custom Omarchy theme, whatever looks good. The README text right below it already explains what it is and that it's not what ships by default; the image itself doesn't need any restraint, just needs to actually be that setup (not something further dressed up beyond what's real).
-
-## Both
-
-- Reasonable file size — GitHub renders large GIFs slowly; keep under a few MB if possible.
-- PNG for static screenshots, GIF for anything showing motion/interaction (GitHub doesn't autoplay embedded video files the way it does GIFs).
+- Two-pass palette conversion beats naive single-pass GIF encoding by a lot: `ffmpeg -i in.mp4 -vf "fps=N,scale=W:-1:flags=lanczos,palettegen" palette.png` then `ffmpeg -i in.mp4 -i palette.png -filter_complex "fps=N,scale=W:-1:flags=lanczos[x];[x][1:v]paletteuse" -loop 0 out.gif`.
+- Busier/more colorful content (full-desktop captures) needs a lower fps and narrower scale to stay a reasonable size than flat UI-only captures do — check the actual output size before committing, don't assume the first pass's settings are fine.
+- Keep it reasonable — GitHub renders large GIFs slowly, and every visitor downloads the full file just to see the README.
