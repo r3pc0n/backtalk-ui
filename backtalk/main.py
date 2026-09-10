@@ -40,7 +40,13 @@ setup at all. Kokoro is always the silent last-resort fallback if the
 chosen engine fails) / "switch voice to <name>" for any character
 you've added to CFG["voices"] in backtalk.json (empty by default — see
 the README), Pocket's safetensors and Cartesia's clone id switching
-together so it's audible regardless of voice_mode) / "set volume to
+together so it's audible regardless of voice_mode) / "switch to cloud
+hearing" and "switch to local hearing" (stt_mode, a separate axis from
+voice_mode — which engine TRANSCRIBES you, not which one SPEAKS. cloud
+sends each utterance to stt_cloud_provider's engine, currently Voxtral
+on your own key; local runs faster-whisper in-process, free, no
+network. Local whisper is the automatic fallback if cloud fails or
+isn't set up) / "set volume to
 70" (0-300, output gain applied after
 whichever engine renders the audio — no engine or restart needed).
 And with permission_mode "ask" (the default), gated tool calls ASK OUT
@@ -77,7 +83,7 @@ from backtalk import signals, transcript_server
 from backtalk.brain import WarmBrain
 from backtalk.config import CFG
 from backtalk.ears import (Ears, explain_audio_failure, record_held,
-                           warm as warm_ears)
+                           stt_cloud_ready, warm as warm_ears)
 from backtalk.mouth import Mouth, cloud_ready
 from backtalk.ptt import PTTListener
 from backtalk.vlog import log
@@ -479,6 +485,10 @@ CONSOLE_VERBS = {
                    "cloud voice mode", "switch to the cloud voice"),
     "voicelocal": ("switch to local voice", "use local voice",
                    "local voice mode", "switch to the local voice"),
+    "sttlocal": ("switch to local hearing", "use local hearing",
+                 "local hearing mode", "switch to the local hearing"),
+    "sttcloud": ("switch to cloud hearing", "use cloud hearing",
+                 "cloud hearing mode", "switch to the cloud hearing"),
 }
 _EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # Characters are config-driven, not hardcoded -- CFG["voices"] in
@@ -925,7 +935,8 @@ async def amain():
             auto_approve=_AUTOAPPROVE["on"],
             voice_mode=CFG.get("voice_mode", "cloud"),
             voice=CFG.get("pocket", {}).get("voice", "default"),
-            volume=CFG.get("volume", 100))
+            volume=CFG.get("volume", 100),
+            stt_mode=CFG.get("stt_mode", "local"))
 
     async def run_console(verb):
         """One voice-console verb. The current reply was already
@@ -1091,6 +1102,39 @@ async def amain():
                            "The config file couldn't be written, so "
                            "tell me again after a restart. ")
                           + "Say switch to cloud voice to change it.")
+        elif verb == "sttlocal":
+            resp = ""
+            if CFG.get("stt_mode", "local") == "local":
+                mouth.say("Already on local hearing.")
+            else:
+                saved = _write_config_key("stt_mode", "local")
+                transcript_server.set_state(stt_mode="local")
+                mouth.say(("Switched to local hearing. Transcription "
+                           "now runs on your own machine, and that's "
+                           "saved as your default. " if saved else
+                           "Switched to local hearing for this session. "
+                           "The config file couldn't be written, so "
+                           "tell me again after a restart. ")
+                          + "Say switch to cloud hearing to change it "
+                            "back.")
+        elif verb == "sttcloud":
+            resp = ""
+            if not stt_cloud_ready():
+                mouth.say("Cloud hearing needs a Voxtral key set up "
+                          "first — check the README for how to add "
+                          "one.")
+            elif CFG.get("stt_mode", "local") == "cloud":
+                mouth.say("Already on cloud hearing.")
+            else:
+                saved = _write_config_key("stt_mode", "cloud")
+                transcript_server.set_state(stt_mode="cloud")
+                mouth.say(("Switched to cloud hearing, and that's "
+                           "saved as your default. " if saved else
+                           "Switched to cloud hearing for this session. "
+                           "The config file couldn't be written, so "
+                           "tell me again after a restart. ")
+                          + "Say switch to local hearing to change it "
+                            "back.")
         elif verb == "noask":
             resp = ""
             _CONFIRM["verb"] = "noask"

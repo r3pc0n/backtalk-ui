@@ -15,8 +15,17 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The ears — mic capture with VAD endpointing, transcribed in-process
-by faster-whisper. Local, free, no server, no API key.
+"""The ears — mic capture with VAD endpointing, transcribed by
+faster-whisper (default: local, free, no server, no API key) or,
+with stt_mode="cloud", sent to whichever engine stt_cloud_provider
+names instead (today: Mistral's Voxtral, on YOUR key — see
+_get_voxtral_key). Cloud mode falls back to
+local whisper on any failure — network, bad key, rate limit — same
+degrade-never-mute rule mouth.py follows for TTS, and it skips loading
+the local model at startup entirely (see warm()), so a
+resource-limited machine never pays for local weights it isn't using.
+Mic capture and VAD endpointing are always local either way — only the
+transcription step leaves the machine.
 
 record_held() is the hold-to-talk capture (the button is the VAD).
 Ears.listen_once() is the legacy open-mic mode: blocks until one
@@ -25,10 +34,13 @@ an utterance opens after ~120ms of sustained speech, closes after
 `silence_ms` of trailing quiet. A `gate` callable can suppress
 listening (so the open mic ignores the speakers unless barge-in is on).
 """
+import io
+import os
 import platform
 import re
 import sys
 import threading
+import wave
 
 import numpy as np
 import sounddevice as sd
@@ -257,6 +269,110 @@ def check_microphone() -> bool:
         return False
 
 
+_vx_key_cache: str | None = None
+
+
+def _vx_key_slot() -> str:
+    """The credential-store entry name, so someone who already keeps a
+    key under their own name points at it instead of storing a second
+    copy."""
+    return str(CFG.get("voxtral", {}).get("key_slot") or "backtalk-voxtral")
+
+
+def _get_voxtral_key() -> str:
+    """The Mistral API key, from the most secure store available --
+    NEVER from a file in this repo. Same lookup order as
+    mouth._get_elevenlabs_key:
+      1. macOS Keychain, item `backtalk-voxtral` by default (change it
+         with voxtral.key_slot) -- seed it once with:
+         security add-generic-password -a "$USER" -s backtalk-voxtral -T /usr/bin/security -w
+      2. Linux secret-tool (libsecret):
+         secret-tool store --label backtalk service backtalk-voxtral
+      3. the MISTRAL_API_KEY environment variable -- the last-resort
+         fallback, and the only option on Windows for now. Know the
+         tradeoff: an export line in a shell profile is a plaintext key
+         on disk, which is exactly what the keychain path avoids."""
+    global _vx_key_cache
+    if _vx_key_cache is not None:
+        return _vx_key_cache
+    import subprocess
+    key = ""
+    try:
+        if sys.platform == "darwin":
+            r = subprocess.run(["security", "find-generic-password",
+                                "-s", _vx_key_slot(), "-w"],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                key = r.stdout.strip()
+        elif sys.platform.startswith("linux"):
+            from shutil import which
+            if which("secret-tool"):
+                r = subprocess.run(["secret-tool", "lookup", "service",
+                                    _vx_key_slot()],
+                                   capture_output=True, text=True, timeout=5)
+                if r.returncode == 0:
+                    key = r.stdout.strip()
+    except Exception:
+        pass
+    _vx_key_cache = key or os.environ.get("MISTRAL_API_KEY", "")
+    return _vx_key_cache
+
+
+def _voxtral_ready() -> bool:
+    """Voxtral is selectable, not independently toggled: whether it's
+    USED is entirely stt_mode/stt_cloud_provider's call (see
+    transcribe()) -- this only checks whether it CAN work, i.e. the
+    key is actually there."""
+    return bool(_get_voxtral_key())
+
+
+def stt_cloud_ready() -> bool:
+    """Whether "cloud" stt_mode would actually transcribe via the
+    configured stt_cloud_provider right now, rather than silently
+    falling back to local whisper. Public (no leading underscore)
+    specifically so main.py's "switch to cloud hearing" verb can check
+    this before switching, without reaching into the private
+    per-provider check itself -- what counts as "cloud is usable" is
+    this module's call to make, same pattern mouth.cloud_ready()
+    follows for TTS."""
+    provider = CFG.get("stt_cloud_provider", "voxtral")
+    if provider == "voxtral":
+        return _voxtral_ready()
+    return False
+
+
+def _pcm_to_wav_bytes(pcm: np.ndarray) -> bytes:
+    """int16 mono 16kHz -> a WAV container in memory. Mistral's
+    transcription endpoint takes a multipart file upload; wrapping in
+    stdlib `wave` avoids adding an ffmpeg dependency just for this."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(pcm.astype(np.int16).tobytes())
+    return buf.getvalue()
+
+
+def _transcribe_voxtral(pcm: np.ndarray, timeout: float = 10.0) -> str:
+    """One utterance -> text, via Mistral's /v1/audio/transcriptions.
+    Short timeout: push-to-talk needs this snappy, and any failure here
+    just falls back to local whisper (see transcribe())."""
+    import httpx
+
+    vx = CFG["voxtral"]
+    key = _get_voxtral_key()
+    r = httpx.post(
+        "https://api.mistral.ai/v1/audio/transcriptions",
+        headers={"Authorization": f"Bearer {key}"},
+        data={"model": vx.get("model", "voxtral-mini-latest")},
+        files={"file": ("utterance.wav", _pcm_to_wav_bytes(pcm), "audio/wav")},
+        timeout=timeout,
+    )
+    r.raise_for_status()
+    return str(r.json().get("text", "")).strip()
+
+
 def _probe(model):
     """Run a tenth of a second of silence through the real path.
 
@@ -270,11 +386,25 @@ def _probe(model):
 
 
 def warm():
-    """Load the STT model (first call downloads it to the HF cache).
-    Called at startup while the greeting plays, so the first real
-    utterance doesn't pay the load."""
-    global _model, _backend
+    """Mic pre-flight, always -- capture is local no matter which STT
+    engine is selected. The local whisper model itself only loads here
+    when stt_mode is "local" (the default): in "voxtral" mode it stays
+    unloaded, on purpose, until transcribe() actually needs the
+    fallback -- that's the whole point of offloading STT on a
+    resource-limited machine. Called at startup while the greeting
+    plays, so when the local model DOES load, the first real utterance
+    doesn't pay for it."""
     check_microphone()
+    if CFG.get("stt_mode", "local") == "local":
+        _load_local_model()
+
+
+def _load_local_model():
+    """The actual whisper load (first call downloads it to the HF
+    cache) -- split out from warm() so transcribe() can call it lazily
+    as a voxtral fallback without needing to know about the mic
+    pre-flight."""
+    global _model, _backend
     with _model_lock:
         if _model is None:
             if _apple_gpu_available():
@@ -324,10 +454,37 @@ def warm():
 
 
 def transcribe(pcm: np.ndarray) -> str:
-    """int16 mono 16kHz -> text. Bracketed non-speech markers that
-    whisper emits ([BLANK_AUDIO], [SIGHS], (coughs)...) are stripped;
-    if nothing remains, it was silence."""
-    model = warm()
+    """int16 mono 16kHz -> text. stt_mode is the two-way pick ("local"
+    default / "cloud"); stt_cloud_provider says which cloud engine
+    "cloud" actually calls (only "voxtral" exists today). Cloud tries
+    that engine first and falls back to local whisper on any failure
+    (network, bad key, rate limit) -- degrade, never go silent, same
+    rule mouth.synth_stream follows for TTS. "local" never touches the
+    network. Bracketed non-speech markers that whisper emits
+    ([BLANK_AUDIO], [SIGHS], (coughs)...) are stripped; if nothing
+    remains, it was silence."""
+    if CFG.get("stt_mode", "local") == "cloud":
+        provider = CFG.get("stt_cloud_provider", "voxtral")
+        if provider == "voxtral":
+            if _voxtral_ready():
+                try:
+                    text = _NONSPEECH.sub("", _transcribe_voxtral(pcm)).strip()
+                    log("[ears] transcribed via voxtral")
+                    return text
+                except Exception as e:
+                    log(f"[ears] voxtral failed ({str(e)[:60]}) -- "
+                        f"falling back to local whisper")
+            else:
+                log("[ears] voxtral selected but no key -- falling "
+                    "back to local whisper")
+        else:
+            log(f"[ears] unknown stt_cloud_provider {provider!r} -- "
+                "falling back to local whisper")
+    return _transcribe_local(pcm)
+
+
+def _transcribe_local(pcm: np.ndarray) -> str:
+    model = _load_local_model()
     audio = pcm.astype(np.float32) / 32768.0
     lang = "en" if CFG["stt_model"].endswith(".en") else None
     if _backend == "mlx":

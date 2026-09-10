@@ -1,6 +1,6 @@
 # backtalk-ui
 
-> **Aimed mainly at people already running [Jared Rhodenizer](https://jaredrhod.com)'s full stack** ([fullstack-agent](https://github.com/jaredrhod/fullstack-agent): memory, voice, face, hands) who want a different voice interface than stock backtalk — an explicit Local/Cloud engine choice instead of a fixed pair, config-driven custom voice characters instead of hardcoded ones, and a bundled theme picker for the transcript UI. Worth being upfront about what this actually is: under the hood it's the **complete, independent backtalk application**, not a small patch — full credit and thanks to Jared for the original, and it stays AGPL-3.0-or-later, same as his. See **Install** below for how to swap it in without redoing your existing setup, and **Credits**/**License** for the rest.
+> **Aimed mainly at people already running [Jared Rhodenizer](https://jaredrhod.com)'s full stack** ([fullstack-agent](https://github.com/jaredrhod/fullstack-agent): memory, voice, face, hands) who want a different voice interface than stock backtalk — an explicit Local/Cloud engine choice for both speaking and listening instead of a fixed pair, config-driven custom voice characters instead of hardcoded ones, and a bundled theme picker for the transcript UI. Worth being upfront about what this actually is: under the hood it's the **complete, independent backtalk application**, not a small patch — full credit and thanks to Jared for the original, and it stays AGPL-3.0-or-later, same as his. See **Install** below for how to swap it in without redoing your existing setup, and **Credits**/**License** for the rest.
 
 **Runs on:** Claude Code only; the voice is built on Claude's agent SDK. The $20 Pro plan is enough.
 
@@ -16,13 +16,13 @@ The hearing and the built-in voice run local: free, offline models on your machi
 
 ## What it does
 
-- **Hold a key, talk, release.** Your words are transcribed locally and handed to a live Claude Code session. The reply is spoken sentence by sentence as it's generated, with first audio in about 1 to 2 seconds on warm turns. Prefer no button at all? **Hands-free listening** is one spoken sentence away ("go hands free"), and the key keeps working there as your interrupt.
+- **Hold a key, talk, release.** Your words are transcribed — locally by default, or via a cloud engine if you set one up (see **Speech-to-text** below) — and handed to a live Claude Code session. The reply is spoken sentence by sentence as it's generated, with first audio in about 1 to 2 seconds on warm turns. Prefer no button at all? **Hands-free listening** is one spoken sentence away ("go hands free"), and the key keeps working there as your interrupt.
 - **It's YOUR agent talking.** The session runs in the folder whose CLAUDE.md defines your assistant: same name, same personality, same memory as your terminal sessions. backtalk-ui has no personality of its own; it's a mouth and ears for whoever you already have.
 - **Interrupt it.** Press the key while it's talking and it shuts up and listens. No headphones needed, because the mic only opens while you hold the key, so it never hears the speakers.
 - **Type instead whenever you want.** Typing in the terminal, or in the transcript web page (see below), is the same conversation, and the reply is still spoken.
 - **It asks before it acts, in plain words.** When your agent wants to do something real, it asks out loud the way a person would and waits. An exact spoken yes approves; anything else denies, with your words passed back as the reason. Prefer auto-approve? Say "stop asking for permission" and confirm.
-- **The voice console.** Session control by voice, so you never go back to the keyboard: "clear the session", "compact the session", "switch to the deep model" / "back to the fast model", "set effort to low" (or medium, high, max), "usage report", "go hands free" / "push to talk mode", "stop asking for permission" / "start asking again", "switch to cloud voice" / "switch to local voice", "switch voice to `<name>`" for any character you've set up. Exact phrases, spoken alone.
-- **A persistent transcript web page**, not a raw terminal: settings for model tier, reasoning effort, engine, theme, and volume, plus a hang-up button and a typed-input box. Themed with a bundled palette (see **Theming** below). It opens automatically in your browser when you start a call — if it doesn't (headless setups, some remote sessions), it's at `http://127.0.0.1:8793/`.
+- **The voice console.** Session control by voice, so you never go back to the keyboard: "clear the session", "compact the session", "switch to the deep model" / "back to the fast model", "set effort to low" (or medium, high, max), "usage report", "go hands free" / "push to talk mode", "stop asking for permission" / "start asking again", "switch to cloud voice" / "switch to local voice", "switch to cloud hearing" / "switch to local hearing", "switch voice to `<name>`" for any character you've set up. Exact phrases, spoken alone.
+- **A persistent transcript web page**, not a raw terminal: settings for model tier, reasoning effort, voice engine, speech-to-text engine, theme, and volume, plus a hang-up button and a typed-input box. Themed with a bundled palette (see **Theming** below). It opens automatically in your browser when you start a call — if it doesn't (headless setups, some remote sessions), it's at `http://127.0.0.1:8793/`.
 - **Music ducks while it speaks** (Spotify, macOS) and comes back up after.
 - **It thinks out loud.** While the agent works, you hear a processing sound, so a pause never reads as a dead line. Silence it with `"thinking_sound": ""` in the config.
 
@@ -126,6 +126,15 @@ Both keys are optional — `label` defaults to the name capitalized, and `cartes
 
 Pocket TTS needs no entry in `voices` at all — it clones whichever name you set `pocket.voice` to, straight from a `voices/<name>.safetensors` file (exported automatically from `pocket.reference_audio` the first time it's needed). Give a name both a safetensors file *and* a `voices` entry with a `cartesia_voice_id`, and switching characters moves both engines together, whichever one is actually live.
 
+## Speech-to-text
+
+**Zero-config default: local, via [faster-whisper](https://github.com/SYSTRAN/faster-whisper).** Runs in-process, offline, no account, no per-word cost — the model downloads once to your Hugging Face cache the first time you speak. `stt_model` in `backtalk.json` picks the size (`tiny.en`/`base.en`/`small.en`/`medium.en` — `small.en` is the accuracy/speed sweet spot on a normal machine). This works the moment you clone the repo — nothing to set up.
+
+**Local vs. Cloud — the same explicit pick as the voice above, a separate axis.** Say "switch to local hearing" or "switch to cloud hearing" (or use the Speech-to-Text Engine buttons in the transcript page). `"stt_mode"` in `backtalk.json` defaults to `"local"`. Cloud mode falls back to local whisper on any failure — network, bad key, rate limit — so it degrades instead of going silent, and it skips loading the local model at startup entirely, so a resource-limited machine never pays for weights it isn't using. This is the option worth knowing about if you're running backtalk on a laptop or any machine where a local speech model competing for CPU/RAM is a real cost, not just a preference.
+
+- **Local**: faster-whisper, as above.
+- **Cloud**: [Mistral's Voxtral](https://mistral.ai/news/voxtral/) is the only cloud engine today (`stt_cloud_provider` names which one "cloud" mode calls, room for more later without renaming this switch). Sign up at [console.mistral.ai](https://console.mistral.ai/), key goes in the OS keychain, never a file: macOS `security add-generic-password -a "$USER" -s backtalk-voxtral -T /usr/bin/security -w`, Linux `secret-tool store --label backtalk service backtalk-voxtral`, or the `MISTRAL_API_KEY` environment variable as a last resort. Trying to switch to cloud before a key's set up gets you a spoken reminder to come back here instead of silently failing.
+
 ## Theming
 
 The transcript page ships with **Solitude** as its default theme — picked deliberately as the most neutral of the bundled set, not a personal favorite. Open the settings panel (the hamburger icon) and use the **Theme** dropdown to pick from 28 more, all bundled, no network request: Atelier, Batou, Bauhaus, Catppuccin (and Latte), Ethereal, Everforest, Flexoki Light, Greek Noir, Gruvbox (and Material), Hackerman, Kanagawa, Last Horizon, Lumon, Lupine, Matrix, Matte Black, Mechanoonna, Miasma, Nord, Osaka Jade, Retro 82, Ristretto, Rosé Pine, Tokyo Night, Vantablack, White. Your pick is saved per-browser (`localStorage`), not in `backtalk.json`.
@@ -172,6 +181,8 @@ Both are Jared's own projects, unrelated to what changed in this fork — they w
 This fork's own changes aside, everything below is unchanged from the original and stays credited exactly as Jared wrote it:
 
 Speech recognition by [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (MIT) running [OpenAI Whisper](https://github.com/openai/whisper) models (MIT). Voice by [Kokoro](https://github.com/hexgrad/kokoro) (Apache 2.0) with [espeak-ng](https://github.com/espeak-ng/espeak-ng) (GPL-3.0, used as a system tool) for phonemization. Built on the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview).
+
+This fork's own addition: optional cloud speech recognition via [Mistral's Voxtral](https://mistral.ai/news/voxtral/), on your own API key.
 
 **backtalk itself** is [Jared Rhodenizer](https://jaredrhod.com)'s work — this fork changes how voices are picked and configured, not the core loop underneath. If you want the original, unmodified project (installer wizard, ElevenLabs-focused setup, his own video series and Discord community), it's at [github.com/jaredrhod/backtalk](https://github.com/jaredrhod/backtalk).
 

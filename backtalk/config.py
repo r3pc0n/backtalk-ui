@@ -163,6 +163,32 @@ DEFAULTS = {
     #
     # NOT "stt_device" below, which is the Whisper COMPUTE device.
     "mic_device": "",
+    # Which STT engine transcribes: "local" (default) is faster-whisper,
+    # in-process, free, no network. "cloud" sends each utterance to
+    # whichever engine stt_cloud_provider names instead — falls back to
+    # local whisper on any cloud failure (bad key, network, rate limit),
+    # same degrade-never-mute rule as the TTS engines below. In "cloud"
+    # mode the local whisper model is NOT loaded at startup — it loads
+    # lazily only if a fallback is actually needed — so a
+    # resource-limited machine never pays for local weights it doesn't
+    # use. Deliberately just "local"/"cloud", not named per-provider:
+    # with only one cloud STT engine so far there's nothing to pick
+    # between yet, and it means adding a second cloud engine later
+    # never requires renaming this switch or its console phrase/UI
+    # button — just repointing stt_cloud_provider.
+    "stt_mode": "local",
+    # Which cloud engine "cloud" mode above actually calls. Only
+    # "voxtral" exists today; this is its own key (not folded into
+    # stt_mode) so a second cloud STT provider, whenever one's added,
+    # is a new value here rather than a breaking change to stt_mode.
+    "stt_cloud_provider": "voxtral",
+    "voxtral": {
+        "model": "voxtral-mini-latest",
+        # Which OS credential-store entry holds the key. Change it if you
+        # already keep a Mistral key under a name of your own rather than
+        # seeding a second copy of the same secret.
+        "key_slot": "backtalk-voxtral",
+    },
     # Optional premium voice: ElevenLabs on YOUR key. The key NEVER
     # goes in a file: it's read from the macOS Keychain (item
     # `backtalk-elevenlabs`) or Linux secret-tool, with the

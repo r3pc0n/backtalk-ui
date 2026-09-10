@@ -462,10 +462,17 @@ function applyTheme(name) {
           </div>
         </div>
         <div class="settings-section">
-          <div class="settings-label">Engine</div>
+          <div class="settings-label">Voice Engine</div>
           <div class="model-btns">
             <button class="model-btn" type="button" data-engine="local" data-phrase="switch to local voice">Local</button>
             <button class="model-btn" type="button" data-engine="cloud" data-phrase="switch to cloud voice">Cloud</button>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-label">Speech-to-Text Engine</div>
+          <div class="model-btns">
+            <button class="model-btn" type="button" data-stt="local" data-phrase="switch to local hearing">Local</button>
+            <button class="model-btn" type="button" data-stt="cloud" data-phrase="switch to cloud hearing">Cloud</button>
           </div>
         </div>
         <!-- No default Voice button row: CFG["voices"] is empty out of
@@ -903,6 +910,8 @@ function applyTheme(name) {
         isActive = btn.getAttribute("data-effort") === state.effort;
       } else if (btn.hasAttribute("data-engine")) {
         isActive = btn.getAttribute("data-engine") === (state.voice_mode || "cloud");
+      } else if (btn.hasAttribute("data-stt")) {
+        isActive = btn.getAttribute("data-stt") === (state.stt_mode || "local");
       } else {
         isActive = btn.getAttribute("data-voice") === state.voice;
       }
